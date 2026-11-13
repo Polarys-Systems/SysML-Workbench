@@ -1,0 +1,64 @@
+# EagleView settings. Every value is optional: delete a line to get the default.
+# The file is re-read while the app runs, so edits apply immediately.
+# The menus (View, Diagram, Settings) change these values and write them back
+# here, keeping your comments. Colors are "#rrggbb" or "#rrggbbaa".
+
+[view]
+mode = "split"            # "split", "diagram" or "code" (Ctrl+Tab cycles at runtime)
+theme = "github-dark"     # a preset in themes/: "github-dark", "github-light", "nord", ...
+split = 0.37              # code editor width in split mode (drag the divider to change)
+tree = true               # model tree panel on the right (Ctrl+B toggles)
+tree_width = 300          # model tree width (drag its divider to change)
+outline_font_size = 14    # code editor (Ctrl+= / Ctrl+- / Ctrl+0)
+ui_font_size = 13         # menu bar, menus and model tree
+title_font_size = 20
+status_font_size = 12.5
+show_frame_time = true
+max_diagnostics = 4
+
+[diagram]
+font_size = 13
+compartments = true       # list owned features inside each node
+max_compartment_lines = 8
+node_min_width = 140
+node_max_width = 340
+node_padding = 10
+corner_radius = 6
+border_width = 1
+edge_thickness = 1.25
+arrow_size = 9
+gap = [70, 90]            # horizontal, vertical spacing of the automatic layout
+max_row = 6               # nodes per row before the layout wraps
+grid = true
+grid_spacing = 40
+snap = true               # snap dragged nodes to the grid
+zoom_speed = 1.15
+min_zoom = 0.1
+max_zoom = 4.0
+edge_labels = true
+
+[diagram.edges]           # which relationships are drawn
+specialization = true
+typing = true
+composition = true
+satisfy = true
+dependency = true
+connection = true
+flow = true
+allocation = true
+
+# Colors on top of the theme preset: uncomment a section and set only what you
+# want to change, e.g.
+# [theme]
+# background = "#000000"
+# [theme.node]
+# name = "#ffffff"
+
+[fonts]
+dir = "C:/Windows/Fonts"  # used for names that are not absolute paths
+title = "segoeuib.ttf"
+body = "segoeui.ttf"
+mono = "cour.ttf"
+
+[files]
+recent = ['C:\devel\SysML-EagleView\sysml\tests\data\drone.sysml', 'C:\Users\sasch\Downloads\obsw_startup.sysml'] # recently opened models (File > Open Recent)

@@ -1,0 +1,56 @@
+# GitHub light (Primer) theme for EagleView.
+# Pick it with [view] theme = "github-light" or the Settings > Theme menu.
+# Only colors are set here.
+
+[theme]
+background = "#ffffff"
+header = "#f6f8fa"
+panel = "#ffffff"
+divider = "#d0d7de"
+text = "#1f2328"
+dim = "#656d76"
+error = "#cf222e"
+selection = "#0969da"
+selection_row = "#0969da14"
+hover_row = "#d0d7de33"
+grid = "#f3f5f7"
+cursor = "#0969da"
+text_selection = "#0969da33"
+find_match = "#d4a72c66"
+current_line = "#eaeef280"
+
+[theme.outline]           # GitHub light syntax colors
+package = "#0550ae"
+import = "#656d76"
+comment = "#6e7781"
+definition = "#8250df"
+usage = "#1f2328"
+relationship = "#116329"
+behavior = "#953800"
+expression = "#0a3069"
+keyword = "#cf222e"
+
+[theme.node]
+header = "#f6f8fa"
+fill = "#ffffff"
+border = "#d0d7de"
+hover_border = "#8c959f"
+separator = "#d8dee4"
+name = "#1f2328"
+compartment = "#424a53"
+shadow = "#1f23280f"
+definition = "#9a6700"
+usage = "#0969da"
+behavior = "#8250df"
+requirement = "#1a7f37"
+
+[theme.edge]
+specialization = "#6e7781"
+typing = "#8c959f"
+composition = "#6b9ad6"
+satisfy = "#5fa872"
+dependency = "#a68be0"
+connection = "#57606a"
+flow = "#1b7c83"
+allocation = "#9a6700"
+label = "#656d76"

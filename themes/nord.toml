@@ -1,0 +1,55 @@
+# Nord-inspired dark theme for EagleView (arctic blue-grey surfaces).
+# Pick it with [view] theme = "nord" or the Settings > Theme menu.
+
+[theme]
+background = "#2e3440"
+header = "#272c36"
+panel = "#2e3440"
+divider = "#3b4252"
+text = "#eceff4"
+dim = "#9aa5b8"
+error = "#bf616a"
+selection = "#88c0d0"
+selection_row = "#88c0d030"
+hover_row = "#d8dee910"
+grid = "#333a47"
+cursor = "#88c0d0"
+text_selection = "#81a1c155"
+find_match = "#ebcb8b55"
+current_line = "#3b425280"
+
+[theme.outline]
+package = "#81a1c1"
+import = "#7b88a1"
+comment = "#7b88a1"
+definition = "#b48ead"
+usage = "#eceff4"
+relationship = "#a3be8c"
+behavior = "#d08770"
+expression = "#8fbcbb"
+keyword = "#81a1c1"
+
+[theme.node]
+header = "#3b4252"
+fill = "#2e3440"
+border = "#434c5e"
+hover_border = "#7b88a1"
+separator = "#3b4252"
+name = "#eceff4"
+compartment = "#d8dee9"
+shadow = "#1d212966"
+definition = "#ebcb8b"
+usage = "#88c0d0"
+behavior = "#b48ead"
+requirement = "#a3be8c"
+
+[theme.edge]
+specialization = "#9aa5b8"
+typing = "#7b88a1"
+composition = "#5e81ac"
+satisfy = "#7f9a6a"
+dependency = "#8f7290"
+connection = "#d8dee9"
+flow = "#8fbcbb"
+allocation = "#d08770"
+label = "#9aa5b8"

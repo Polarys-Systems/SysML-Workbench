@@ -1,0 +1,19 @@
+[workspace]
+members = ["gpu", "sysml"]
+
+[package]
+name = "eagleview"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpu = { path = "gpu" }
+sysml = { path = "sysml" }
+winit = "0.30"
+bytemuck = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.2.1"
+png = "0.18"
+
+[build-dependencies]
+cc = "1"
