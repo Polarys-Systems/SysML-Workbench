@@ -2,7 +2,8 @@
 //! and keyboard navigation. The window rebuilds the menus from its state every
 //! frame; popups draw in the overlay pass, above the panes.
 
-use crate::config::{Theme, ViewMode};
+use crate::config::ViewMode;
+use crate::theme::{MenuSizes, Theme};
 use crate::diagram::EdgeKind;
 use crate::diagram_view::{Fonts, contains};
 use crate::model_edit::ElementKind;
@@ -63,6 +64,8 @@ pub enum Command {
     EditSettings,
     ReloadSettings,
     Shortcuts,
+    /// Show the n-th problem in the code editor.
+    GotoProblem(u16),
     About,
     /// Model editing from the diagram.
     Model(ModelCommand),
@@ -142,6 +145,8 @@ pub struct MenuBar {
     mouse: [f32; 2],
     /// A context menu (open == [`CONTEXT`]): its items and top-left corner.
     context: Option<(Vec<Item>, [f32; 2])>,
+    /// The context menu opens upwards: its bottom-left corner is at the point.
+    context_above: bool,
     /// The highlight follows the keyboard rather than the mouse.
     keyboard: bool,
 }
@@ -166,10 +171,21 @@ impl MenuBar {
 
     /// Opens a pop-up menu with its top-left corner at `at` (screen pixels).
     pub fn open_context(&mut self, items: Vec<Item>, at: [f32; 2]) {
+        self.open_context_at(items, at, false);
+    }
+
+    /// A context menu whose bottom-left corner is at `at` (for controls at the
+    /// bottom of the window).
+    pub fn open_context_above(&mut self, items: Vec<Item>, at: [f32; 2]) {
+        self.open_context_at(items, at, true);
+    }
+
+    fn open_context_at(&mut self, items: Vec<Item>, at: [f32; 2], above: bool) {
         if items.is_empty() {
             return;
         }
         self.context = Some((items, at));
+        self.context_above = above;
         self.open = Some(CONTEXT);
         self.keyboard = false;
         self.path = vec![None];
@@ -374,6 +390,12 @@ impl MenuBar {
 
     // ---- drawing -----------------------------------------------------------------
 
+    /// Width the menu titles need at UI font size `size` (physical pixels).
+    pub fn titles_width(&self, text: &mut TextRenderer, fonts: Fonts, size: f32, sz: &MenuSizes, dpi: f32) -> f32 {
+        let pad = (sz.pad * dpi).round();
+        self.menus.iter().map(|m| text.measure(fonts.body, size, m.title, None)[0] + pad * 1.6).sum::<f32>() + pad * 0.4
+    }
+
     /// Draws the bar into `bar` (base pass) and the open popups (overlay pass).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -388,23 +410,25 @@ impl MenuBar {
         dpi: f32,
     ) {
         let size = font_size * dpi;
+        let sz = &theme.size.menu;
         let lh = text.line_metrics(fonts.body, size).line_height;
-        let pad = (10.0 * dpi).round();
+        let pad = (sz.pad * dpi).round();
+        // The titles sit on the caller's top bar; `bar` is the strip they use.
         self.bar = bar;
-        shapes.rect(bar, theme.header.0, 0.0);
-        shapes.rect([bar[0], bar[3] - dpi, bar[2], bar[3]], theme.divider.0, 0.0);
         self.titles.clear();
         let mut x = bar[0] + pad * 0.4;
         let ty = ((bar[1] + bar[3]) * 0.5 - lh * 0.5).round();
         for (i, m) in self.menus.iter().enumerate() {
             let w = text.measure(fonts.body, size, m.title, None)[0] + pad * 1.6;
-            let r = [x, bar[1] + 3.0 * dpi, x + w, bar[3] - 3.0 * dpi];
+            let r = [x, bar[1] + sz.title_inset * dpi, x + w, bar[3] - sz.title_inset * dpi];
+            let hot = contains(r, self.mouse);
             if self.open == Some(i) {
-                shapes.rect(r, theme.selection_row.0, 4.0 * dpi);
-            } else if contains(r, self.mouse) {
-                shapes.rect(r, theme.hover_row.alpha(2.0), 4.0 * dpi);
+                shapes.rect(r, theme.selection_row.0, sz.item_radius * dpi);
+            } else if hot {
+                shapes.rect(r, theme.hover_row.alpha(2.0), sz.item_radius * dpi);
             }
-            text.draw(TextStyle::new(fonts.body, size, theme.text.0), [x + pad * 0.8, ty], m.title);
+            let color = if hot || self.open == Some(i) { theme.text.0 } else { theme.text_muted.0 };
+            text.draw(TextStyle::new(fonts.body, size, color), [x + pad * 0.8, ty], m.title);
             self.titles.push(r);
             x += w;
         }
@@ -415,14 +439,19 @@ impl MenuBar {
         text.begin_overlay();
         let origin_at = match &self.context {
             Some((_, at)) if open == CONTEXT => *at,
-            _ => [self.titles[open][0], bar[3]],
+            _ => [self.titles[open][0], bar[3] + 6.0 * dpi],
         };
         let mut origin = origin_at;
         let mut parent_left = origin_at[0];
         // One popup per open level; a submenu opens beside its item.
         for level in 0..self.path.len().max(1) {
             let Some(items) = self.items_at(level) else { break };
-            let popup = layout_popup(text, fonts, size, items, origin, window, dpi, (level > 0).then_some(parent_left));
+            let mut popup = layout_popup(text, fonts, size, &theme.size.menu, items, origin, window, dpi, (level > 0).then_some(parent_left));
+            if level == 0 && open == CONTEXT && self.context_above {
+                // Opened from a control at the bottom: the popup ends at `origin`.
+                let up = [origin[0], (origin[1] - (popup.rect[3] - popup.rect[1])).max(0.0)];
+                popup = layout_popup(text, fonts, size, &theme.size.menu, items, up, window, dpi, None);
+            }
             let sel = self.path.get(level).copied().flatten();
             draw_popup(shapes, text, fonts, size, theme, items, &popup, sel, dpi);
             if let Some(r) = sel.and_then(|s| popup.items.get(s)) {
@@ -445,6 +474,7 @@ fn layout_popup(
     text: &mut TextRenderer,
     fonts: Fonts,
     size: f32,
+    sz: &MenuSizes,
     items: &[Item],
     origin: [f32; 2],
     window: [f32; 2],
@@ -452,19 +482,19 @@ fn layout_popup(
     parent_left: Option<f32>,
 ) -> Popup {
     let lh = text.line_metrics(fonts.body, size).line_height;
-    let row_h = (lh * 1.55).round();
-    let sep_h = (lh * 0.6).round();
-    let pad = (10.0 * dpi).round();
-    let gutter = (size * 1.9).round();
+    let row_h = sz.row_height.px(dpi, size, lh).round();
+    let sep_h = sz.separator_height.px(dpi, size, lh).round();
+    let pad = (sz.pad * dpi).round();
+    let gutter = sz.gutter.px(dpi, size, lh).round();
     let mut label_w: f32 = 0.0;
     let mut short_w: f32 = 0.0;
     for it in items {
         label_w = label_w.max(text.measure(fonts.body, size, &it.label, None)[0]);
         if !it.shortcut.is_empty() {
-            short_w = short_w.max(text.measure(fonts.body, size * 0.92, it.shortcut, None)[0]);
+            short_w = short_w.max(text.measure(fonts.body, size * sz.shortcut_scale, it.shortcut, None)[0]);
         }
     }
-    let width = (gutter + label_w + if short_w > 0.0 { pad * 3.0 + short_w } else { 0.0 } + pad * 3.0).max(180.0 * dpi).round();
+    let width = (gutter + label_w + if short_w > 0.0 { pad * 3.0 + short_w } else { 0.0 } + pad * 3.0).max(sz.min_width * dpi).round();
     let height: f32 = items.iter().map(|i| if matches!(i.kind, ItemKind::Separator) { sep_h } else { row_h }).sum::<f32>() + pad * 0.8;
     let mut x = origin[0];
     if x + width > window[0] {
@@ -481,7 +511,7 @@ fn layout_popup(
         .iter()
         .map(|i| {
             let h = if matches!(i.kind, ItemKind::Separator) { sep_h } else { row_h };
-            let r = [rect[0] + 4.0 * dpi, iy, rect[2] - 4.0 * dpi, iy + h];
+            let r = [rect[0] + sz.item_inset * dpi, iy, rect[2] - sz.item_inset * dpi, iy + h];
             iy += h;
             r
         })
@@ -502,28 +532,29 @@ fn draw_popup(
     dpi: f32,
 ) {
     let r = popup.rect;
-    let radius = 6.0 * dpi;
-    let shadow = 8.0 * dpi;
-    shapes.rect([r[0] - 1.0, r[1] + 2.0 * dpi, r[2] + shadow * 0.4, r[3] + shadow * 0.6], theme.node.shadow.alpha(1.0), radius + shadow * 0.5);
-    shapes.bordered_rect(r, theme.header.0, theme.divider.0, radius, dpi.max(1.0));
+    let sz = &theme.size.menu;
+    let radius = sz.radius * dpi;
+    let shadow = sz.shadow * dpi;
+    shapes.shadow([r[0], r[1] + shadow * 0.5, r[2], r[3] + shadow * 0.5], theme.glass.shadow.0, radius, shadow * 1.5);
+    shapes.bordered_rect(r, theme.bg.bar.0, theme.border.0, radius, dpi.max(1.0));
     let lh = text.line_metrics(fonts.body, size).line_height;
-    let pad = (10.0 * dpi).round();
-    let gutter = (size * 1.9).round();
-    let short_size = size * 0.92;
+    let pad = (sz.pad * dpi).round();
+    let gutter = sz.gutter.px(dpi, size, lh).round();
+    let short_size = size * sz.shortcut_scale;
     for (i, (it, ir)) in items.iter().zip(&popup.items).enumerate() {
         if matches!(it.kind, ItemKind::Separator) {
             let y = ((ir[1] + ir[3]) * 0.5).round();
-            shapes.rect([ir[0] + pad * 0.4, y, ir[2] - pad * 0.4, y + dpi.max(1.0)], theme.divider.0, 0.0);
+            shapes.rect([ir[0] + pad * 0.4, y, ir[2] - pad * 0.4, y + dpi.max(1.0)], theme.border.0, 0.0);
             continue;
         }
         let hot = highlighted == Some(i) && it.enabled;
         if hot {
-            shapes.rect(*ir, theme.selection.alpha(0.9), 4.0 * dpi);
+            shapes.rect(*ir, theme.accent.alpha(0.9), sz.item_radius * dpi);
         }
         let color = if !it.enabled {
-            theme.dim.alpha(0.6)
+            theme.text_muted.alpha(0.6)
         } else if hot {
-            [1.0, 1.0, 1.0, 1.0]
+            theme.text_on_accent.0
         } else {
             theme.text.0
         };
@@ -552,7 +583,7 @@ fn draw_popup(
         if !it.shortcut.is_empty() {
             let w = text.measure(fonts.body, short_size, it.shortcut, None)[0];
             let sy = (cy - text.line_metrics(fonts.body, short_size).line_height * 0.5).round();
-            let c = if hot { [1.0, 1.0, 1.0, 0.85] } else { theme.dim.0 };
+            let c = if hot { theme.text_on_accent.alpha(0.85) } else { theme.text_muted.0 };
             text.draw(TextStyle::new(fonts.body, short_size, c), [ir[2] - pad - w, sy], it.shortcut);
         }
     }

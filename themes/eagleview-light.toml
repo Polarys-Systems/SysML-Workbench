@@ -1,0 +1,104 @@
+# EagleView light: calm white cards on a cool grey app background.
+# Pick it with [view] theme = "eagleview-light" or the Settings > Theme menu.
+#
+# Values marked "spec" come from the EagleView design brief and are exact.
+# Values marked "provisional" are placeholders until the token sheet
+# (eagleview-tokens.png) is transcribed; they already meet 4.5:1 for text
+# (checked by `theme::tests::light_text_contrast`).
+
+[theme]
+border = "#e1e5ec"           # spec
+text = "#151a23"             # spec
+text_muted = "#5f6878"       # spec
+text_on_accent = "#ffffff"
+error = "#c42b2b"            # provisional
+success = "#1f8a52"
+accent = "#3b6ff5"           # spec
+selection_row = "#eef3ff"    # spec (selected tree row)
+hover_row = "#151a230a"      # provisional
+grid = "#c9d1de"             # grid dots
+cursor = "#3b6ff5"
+text_selection = "#3b6ff533" # provisional
+find_match = "#f5b32e55"     # provisional
+current_line = "#eef3ff"     # spec
+
+[theme.bg]                   # surfaces, from the window inwards
+app = "#eef1f5"              # spec: behind the panel cards
+panel = "#ffffff"            # spec: code editor, model tree
+canvas = "#f7f8fa"           # spec: diagram
+bar = "#ffffff"              # top bar, toolbars, popups
+
+[theme.syntax]               # provisional until the sheet's syntax theme
+package = "#2f5bd8"
+import = "#5f6878"
+comment = "#5f6878"
+definition = "#2f5bd8"
+usage = "#151a23"
+relationship = "#0f7a6c"
+behavior = "#8a4b08"
+expression = "#0f6e8c"
+keyword = "#7a3fd1"
+
+[theme.node]                 # provisional until "Node anatomy"
+header = "#ffffff"
+fill = "#ffffff"
+border = "#e1e5ec"
+hover_border = "#c5ccd8"
+separator = "#edf0f4"
+name = "#151a23"
+compartment = "#3d4656"
+shadow = "#1c2b4a1a"
+
+[theme.kind]                 # provisional per-kind fg/bg pairs
+package = { fg = "#3d4a5c", bg = "#edf0f4" }
+import = { fg = "#5f6878", bg = "#f1f3f6" }
+comment = { fg = "#5f6878", bg = "#f1f3f6" }
+definition = { fg = "#2f5bd8", bg = "#eef3ff" }
+usage = { fg = "#0f7a6c", bg = "#e6f6f3" }
+relationship = { fg = "#8a4b08", bg = "#fdf1e3" }
+behavior = { fg = "#7a3fd1", bg = "#f3edff" }
+requirement = { fg = "#b4234a", bg = "#fdecf1" }
+expression = { fg = "#475569", bg = "#f1f5f9" }
+
+[theme.edge]                 # provisional until the edge spec
+specialization = "#5f6878"
+typing = "#8a93a3"
+composition = "#3b6ff5"
+satisfy = "#2e9a62"
+dependency = "#8b6ad8"
+connection = "#5f6878"
+flow = "#1d8fa8"
+allocation = "#c47a1c"
+label = "#5f6878"
+
+[theme.glass]                # floating cards and bars over the canvas
+fill = "#ffffffb8"           # cards: 72% white over the blurred canvas
+bar = "#ffffffa6"            # top and status bars: 65% white
+border = "#e1e5ecd9"
+highlight = "#ffffffff"      # light top edge
+shadow = "#1c2b4a33"         # soft, cool shadow
+control = "#eef1f5"          # mode switch track, search field, chips
+control_active = "#ffffff"   # selected mode
+glow = "#3b6ff540"            # cool blue glow, top left
+glow_alt = "#8b6ad830"        # violet glow, bottom right
+
+[theme.size.diagram]           # node anatomy
+node_radius = 10
+name_scale = 1.0               # 13 px bold name
+keyword_scale = 0.8            # kind pill label
+compartment_scale = 0.85       # 11 px mono compartments
+selected_border_scale = 1.5    # 1.5 px accent border when selected
+selection_ring = 4             # plus a 4 px halo
+selection_ring_alpha = 0.14    # at 14% accent
+shadow_offset = 3
+shadow_blur = 8
+grid_dot = 1.1
+
+[theme.size.menu]
+radius = 10
+item_radius = 6
+
+[theme.size.frame]
+backdrop_blur = 28            # frosted glass
+shadow_blur = 26
+shadow_offset = 10

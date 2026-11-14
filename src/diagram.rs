@@ -31,7 +31,7 @@ pub struct Node {
     /// Top-left corner in diagram units.
     pub pos: [f32; 2],
     pub size: [f32; 2],
-    /// Measured widths of the keyword and name, for centering.
+    /// Measured widths of the kind label and the name.
     pub title_widths: [f32; 2],
     /// Positioned by the user; the automatic layout leaves it alone.
     pub pinned: bool,
@@ -51,6 +51,11 @@ pub struct Node {
 impl Node {
     pub fn rect(&self) -> [f32; 4] {
         [self.pos[0], self.pos[1], self.pos[0] + self.size[0], self.pos[1] + self.size[1]]
+    }
+
+    /// The kind shown in the node's pill: `part def` for `«part def»`.
+    pub fn kind_label(&self) -> &str {
+        self.keyword.trim_start_matches('«').trim_end_matches('»')
     }
 
     pub fn center(&self) -> [f32; 2] {
@@ -114,9 +119,18 @@ pub trait Metrics {
     fn line_height(&mut self, role: TextRole) -> f32;
 }
 
-/// Vertical structure of a node, shared by measuring and drawing.
+/// Padding inside the kind pill (horizontal, vertical) and the gap between the
+/// name and the pill, in diagram units.
+pub const PILL_PAD: [f32; 2] = [7.0, 2.0];
+pub const PILL_GAP: f32 = 12.0;
+
+/// Vertical structure of a node, shared by measuring and drawing: a header
+/// row with the name on the left and the kind pill on the right, then the
+/// compartment lines under a separator.
 pub struct NodeLayout {
-    pub keyword_y: f32,
+    /// Top and height of the kind pill; its text is centered in it.
+    pub pill_y: f32,
+    pub pill_h: f32,
     pub name_y: f32,
     /// y of the separator line, if the node has compartment lines.
     pub separator_y: Option<f32>,
@@ -306,16 +320,17 @@ impl Diagram {
 
     pub fn node_layout(node: &Node, cfg: &DiagramConfig, metrics: &mut dyn Metrics) -> NodeLayout {
         let pad = cfg.node_padding;
-        let keyword_y = pad;
-        let name_y = keyword_y + metrics.line_height(TextRole::Keyword);
-        let after_name = name_y + metrics.line_height(TextRole::Name);
+        let name_h = metrics.line_height(TextRole::Name);
+        let pill_h = metrics.line_height(TextRole::Keyword) + 2.0 * PILL_PAD[1];
+        let header_h = name_h.max(pill_h);
+        let header_bottom = pad + header_h;
         let shown = cfg.compartments && !node.lines.is_empty();
-        let separator_y = shown.then_some(after_name + pad * 0.5);
         NodeLayout {
-            keyword_y,
-            name_y,
-            separator_y,
-            first_line_y: after_name + pad,
+            pill_y: pad + (header_h - pill_h) * 0.5,
+            pill_h,
+            name_y: pad + (header_h - name_h) * 0.5,
+            separator_y: shown.then_some(header_bottom + pad * 0.7),
+            first_line_y: if shown { header_bottom + pad * 1.3 } else { header_bottom },
             line_height: metrics.line_height(TextRole::Compartment),
         }
     }
@@ -349,17 +364,18 @@ impl Diagram {
             let name_h = metrics.line_height(TextRole::Name);
             node.rows = [layout.name_y, name_h, layout.first_line_y, layout.line_height];
             node.title_widths =
-                [metrics.width(TextRole::Keyword, &node.keyword), metrics.width(TextRole::Name, &node.name)];
+                [metrics.width(TextRole::Keyword, node.kind_label()), metrics.width(TextRole::Name, &node.name)];
             let (lines, more) = Self::visible_lines(node, cfg);
-            let mut width = node.title_widths[0].max(node.title_widths[1]);
+            // Header: name, gap, pill.
+            let mut width = node.title_widths[1] + PILL_GAP + node.title_widths[0] + 2.0 * PILL_PAD[0];
             for line in lines {
                 width = width.max(metrics.width(TextRole::Compartment, line));
             }
             let rows = lines.len() + usize::from(more);
             let height = if layout.separator_y.is_some() {
-                layout.first_line_y + rows as f32 * layout.line_height + cfg.node_padding * 0.5
+                layout.first_line_y + rows as f32 * layout.line_height + cfg.node_padding * 0.8
             } else {
-                layout.first_line_y
+                layout.first_line_y + cfg.node_padding
             };
             let width = (width + 2.0 * cfg.node_padding).clamp(cfg.node_min_width, cfg.node_max_width.max(cfg.node_min_width));
             node.size = [width.round(), height.round()];

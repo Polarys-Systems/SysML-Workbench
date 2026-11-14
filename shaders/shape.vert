@@ -9,8 +9,8 @@ struct Shape {
     vec4 geom;   // rect: x0, y0, x1, y1 | line: ax, ay, bx, by (layer space)
     vec4 fill;   // sRGB RGBA; the line color for lines
     vec4 stroke; // sRGB RGBA border color (rects)
-    vec4 params; // x: kind (0 rect, 1 line), y: corner radius | thickness,
-                 // z: border width | dash length (0 = solid), w: unused
+    vec4 params; // x: kind (0 rect, 1 line, 2 glass rect), y: corner radius | thickness,
+                 // z: border width | dash length (0 = solid), w: rect blur (soft shadow)
 };
 
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Shapes {
@@ -59,12 +59,13 @@ void main() {
         vec2 p0 = s.geom.xy * pc.scale + pc.offset;
         vec2 p1 = s.geom.zw * pc.scale + pc.offset;
         vec2 hs = abs(p1 - p0) * 0.5;
-        v_local = mix(-(hs + AA), hs + AA, corner);
+        float blur = max(s.params.w * pc.scale, 0.0);
+        v_local = mix(-(hs + AA + blur), hs + AA + blur, corner);
         screen = (p0 + p1) * 0.5 + v_local;
         v_size = hs;
         float radius = min(s.params.y * pc.scale, min(hs.x, hs.y));
         float border = s.params.z > 0.0 ? max(s.params.z * pc.scale, 1.0) : 0.0;
-        v_params = vec4(0.0, radius, border, 0.0);
+        v_params = vec4(s.params.x, radius, border, blur);
     }
     gl_Position = vec4(screen * pc.pixel_to_ndc - 1.0, 0.0, 1.0);
     // The swapchain is sRGB, so blending happens in linear space.

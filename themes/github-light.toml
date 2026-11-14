@@ -3,14 +3,12 @@
 # Only colors are set here.
 
 [theme]
-background = "#ffffff"
-header = "#f6f8fa"
-panel = "#ffffff"
-divider = "#d0d7de"
+border = "#d0d7de"
 text = "#1f2328"
-dim = "#656d76"
+text_muted = "#656d76"
 error = "#cf222e"
-selection = "#0969da"
+success = "#1a7f37"
+accent = "#0969da"
 selection_row = "#0969da14"
 hover_row = "#d0d7de33"
 grid = "#f3f5f7"
@@ -19,7 +17,13 @@ text_selection = "#0969da33"
 find_match = "#d4a72c66"
 current_line = "#eaeef280"
 
-[theme.outline]           # GitHub light syntax colors
+[theme.bg]                # surfaces, from the window inwards
+app = "#f6f8fa"         # behind the panels
+panel = "#ffffff"       # code editor, model tree
+canvas = "#ffffff"      # diagram
+bar = "#f6f8fa"         # menu bar, header, toolbars, popups
+
+[theme.syntax]           # GitHub light syntax colors
 package = "#0550ae"
 import = "#656d76"
 comment = "#6e7781"
@@ -39,10 +43,17 @@ separator = "#d8dee4"
 name = "#1f2328"
 compartment = "#424a53"
 shadow = "#1f23280f"
-definition = "#9a6700"
-usage = "#0969da"
-behavior = "#8250df"
-requirement = "#1a7f37"
+
+[theme.kind]              # fg: badge letter, keyword, outline; bg: tinted fill
+package = { fg = "#0550ae", bg = "#0550ae24" }
+import = { fg = "#656d76", bg = "#656d7624" }
+comment = { fg = "#6e7781", bg = "#6e778124" }
+definition = { fg = "#9a6700", bg = "#9a670024" }
+usage = { fg = "#0969da", bg = "#0969da24" }
+relationship = { fg = "#116329", bg = "#11632924" }
+behavior = { fg = "#8250df", bg = "#8250df24" }
+requirement = { fg = "#1a7f37", bg = "#1a7f3724" }
+expression = { fg = "#0a3069", bg = "#0a306924" }
 
 [theme.edge]
 specialization = "#6e7781"
@@ -54,3 +65,12 @@ connection = "#57606a"
 flow = "#1b7c83"
 allocation = "#9a6700"
 label = "#656d76"
+
+[theme.glass]
+fill = "#ffffffd9"
+bar = "#f6f8facc"
+border = "#d0d7de"
+highlight = "#ffffffff"
+shadow = "#1f232826"
+control = "#eaeef2"
+control_active = "#ffffff"

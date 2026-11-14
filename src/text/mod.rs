@@ -28,6 +28,8 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::shapes::{PASS_CANVAS, PASS_OVERLAY, PASSES};
+
 /// Horizontal subpixel positions rasterized per glyph.
 const SUBPIXEL_BINS: u32 = 4;
 /// Font sizes are quantized to 1/SIZE_STEPS pixel so cache keys stay finite.
@@ -116,12 +118,12 @@ pub struct TextRenderer {
     instances: Vec<Instance>,
     /// Vertex buffer slot for the next `prepare`; `record` uses the previous one.
     slot: usize,
-    /// (vertex slot, instances of the base pass, all instances).
-    prepared: Option<(usize, u32, u32)>,
-    /// Index of the first queued draw of the overlay pass, if one was started.
-    overlay_from: Option<usize>,
-    /// Instance index where the overlay pass starts.
-    overlay_first: usize,
+    /// (vertex slot, first instance of each pass and the instance count).
+    prepared: Option<(usize, [u32; PASSES as usize + 1])>,
+    /// Index of the first queued draw of each pass after the first, if started.
+    pass_from: [Option<usize>; PASSES as usize - 1],
+    /// Instance index where each pass starts, and the instance count.
+    pass_first: [usize; PASSES as usize + 1],
 }
 
 impl TextRenderer {
@@ -190,8 +192,8 @@ impl TextRenderer {
             instances: Vec::new(),
             slot: 0,
             prepared: None,
-            overlay_from: None,
-            overlay_first: 0,
+            pass_from: [None; PASSES as usize - 1],
+            pass_first: [0; PASSES as usize + 1],
         })
     }
 
@@ -256,7 +258,7 @@ impl TextRenderer {
         self.draws.clear();
         self.text.clear();
         self.clip = None;
-        self.overlay_from = None;
+        self.pass_from = [None; PASSES as usize - 1];
     }
 
     /// Rasterizes missing glyphs, uploads atlas changes and fills this frame's
@@ -281,7 +283,7 @@ impl TextRenderer {
         self.draws.clear();
         self.text.clear();
         self.clip = None;
-        self.overlay_from = None;
+        self.pass_from = [None; PASSES as usize - 1];
         self.upload_atlas()?;
 
         let slot = self.slot;
@@ -298,7 +300,7 @@ impl TextRenderer {
             }
             buffer.as_mut().unwrap().write(0, bytes)?;
         }
-        self.prepared = Some((slot, self.overlay_first as u32, count));
+        self.prepared = Some((slot, self.pass_first.map(|i| i as u32)));
         Ok(())
     }
 
@@ -312,22 +314,30 @@ impl TextRenderer {
         result
     }
 
-    /// Text queued after this call draws in the overlay pass, above the
-    /// overlay shapes (see [`crate::shapes::ShapeRenderer::begin_overlay`]).
-    pub fn begin_overlay(&mut self) {
-        if self.overlay_from.is_none() {
-            self.overlay_from = Some(self.draws.len());
+    /// Text queued after this call draws in `pass` (or the current pass if
+    /// later), above that pass's shapes (see [`crate::shapes::PASSES`]).
+    pub fn begin_pass(&mut self, pass: u8) {
+        for p in 1..=pass.min(PASSES - 1) as usize {
+            if self.pass_from[p - 1].is_none() {
+                self.pass_from[p - 1] = Some(self.draws.len());
+            }
         }
     }
 
-    /// Draws the base (`overlay == false`) or the overlay text of what the last
+    /// Text queued after this call draws in the overlay pass (menus, popups).
+    pub fn begin_overlay(&mut self) {
+        self.begin_pass(PASS_OVERLAY);
+    }
+
+    /// Draws the text of `pass` from what the last
     /// [`Self::prepare`] built. Call inside the render pass whose single color
     /// target has the format given to [`Self::new`].
-    pub fn record(&mut self, cmd: &mut Command, target: vk::Extent2D, overlay: bool) -> gpu::Result<()> {
-        let Some((slot, split, total)) = self.prepared else {
+    pub fn record(&mut self, cmd: &mut Command, target: vk::Extent2D, pass: u8) -> gpu::Result<()> {
+        let Some((slot, bounds)) = self.prepared else {
             return Err(gpu::Error::InvalidState("TextRenderer::prepare was not called"));
         };
-        let (first, count) = if overlay { (split, total - split) } else { (0, split) };
+        let (first, count) = (bounds[pass as usize], bounds[pass as usize + 1] - bounds[pass as usize]);
+        let overlay = pass != PASS_CANVAS;
         if count == 0 || target.width == 0 || target.height == 0 {
             return Ok(());
         }
@@ -353,12 +363,20 @@ impl TextRenderer {
     fn build_instances(&mut self, partial: bool) -> Result<(), AtlasFull> {
         self.instances.clear();
         let draws = std::mem::take(&mut self.draws);
-        let split = self.overlay_from.unwrap_or(draws.len()).min(draws.len());
-        let mut result = self.build_draws(&draws[..split], partial);
-        self.overlay_first = self.instances.len();
-        if result.is_ok() {
-            result = self.build_draws(&draws[split..], partial);
+        // Draw ranges of the passes; a pass that was not started is empty.
+        let mut starts = [0usize; PASSES as usize + 1];
+        starts[PASSES as usize] = draws.len();
+        for p in (1..PASSES as usize).rev() {
+            starts[p] = self.pass_from[p - 1].unwrap_or(starts[p + 1]).min(starts[p + 1]);
         }
+        let mut result = Ok(());
+        for p in 0..PASSES as usize {
+            self.pass_first[p] = self.instances.len();
+            if result.is_ok() {
+                result = self.build_draws(&draws[starts[p]..starts[p + 1]], partial);
+            }
+        }
+        self.pass_first[PASSES as usize] = self.instances.len();
         self.draws = draws;
         result
     }

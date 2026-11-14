@@ -2,7 +2,7 @@
 //! builds the vendored stb_truetype.
 use std::{env, path::PathBuf, process::Command};
 
-const SHADERS: [&str; 4] = ["shape.vert", "shape.frag", "text.vert", "text.frag"];
+const SHADERS: [&str; 6] = ["shape.vert", "shape.frag", "text.vert", "text.frag", "post.vert", "post.frag"];
 
 fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());

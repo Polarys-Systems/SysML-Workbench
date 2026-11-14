@@ -7,6 +7,10 @@ layout(location = 3) flat in vec4 v_stroke;
 layout(location = 4) flat in vec4 v_params;
 layout(location = 0) out vec4 out_color;
 
+// The canvas, shrunk by BACKDROP_SHRINK and blurred (see src/backdrop.rs).
+layout(set = 0, binding = 0) uniform sampler2D u_backdrop;
+const float BACKDROP_SHRINK = 4.0;
+
 vec4 premultiply(vec4 c) {
     return vec4(c.rgb * c.a, c.a);
 }
@@ -31,8 +35,16 @@ void main() {
         float border = v_params.z;
         vec2 q = abs(v_local) - v_size + radius;
         float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
-        float outer = clamp(0.5 - d, 0.0, 1.0);
+        float blur = v_params.w;
+        // Blurred rects (soft shadows) fade over 2 * blur around the edge.
+        float outer = blur > 0.0 ? 1.0 - smoothstep(-blur, blur, d) : clamp(0.5 - d, 0.0, 1.0);
         vec4 c = premultiply(v_fill);
+        if (int(v_params.x + 0.5) == 2) {
+            // Glass: the blurred canvas behind, tinted by the fill, opaque.
+            vec2 uv = gl_FragCoord.xy / (BACKDROP_SHRINK * vec2(textureSize(u_backdrop, 0)));
+            vec3 behind = textureLod(u_backdrop, uv, 0.0).rgb;
+            c = vec4(mix(behind, v_fill.rgb, v_fill.a), 1.0);
+        }
         if (border > 0.0) {
             float inner = clamp(0.5 - (d + border), 0.0, 1.0);
             c = mix(premultiply(v_stroke), c, inner);

@@ -5,7 +5,7 @@
 
 use super::Ui;
 use crate::code_view::{KeyInput, edit_key};
-use crate::config::Theme;
+use crate::theme::{Color, Theme};
 use crate::diagram_view::{Fonts, contains};
 use crate::editor::Editor;
 use crate::menu::{Command, Item, ModelCommand, UNTYPED};
@@ -217,7 +217,7 @@ impl Ui {
         self.open_field(&flat, Purpose::Declaration { start, end, original }, anchor);
     }
 
-    fn commit_field(&mut self) {
+    pub(super) fn commit_field(&mut self) {
         let Some(field) = self.edit.field.take() else { return };
         let new = field.editor.text().trim().to_owned();
         match field.purpose {
@@ -542,6 +542,18 @@ impl Ui {
     }
 
     /// A press in the diagram area. True if editing consumed it.
+    /// A press outside the open inline field applies it; true if the press
+    /// is on the field.
+    pub(super) fn press_field(&mut self, p: [f32; 2]) -> bool {
+        if let Some(f) = &self.edit.field {
+            if contains(f.rect, p) {
+                return true;
+            }
+            self.commit_field();
+        }
+        false
+    }
+
     pub(super) fn edit_press(&mut self, left: bool, p: [f32; 2]) -> bool {
         // A click outside an open field applies it.
         if let Some(f) = &self.edit.field {
@@ -555,7 +567,7 @@ impl Ui {
                 let (_, kinds) = model_edit::palette().into_iter().nth(i).unwrap();
                 let items = kinds.into_iter().map(|k| Item::action(k.label(), "", Command::Model(ModelCommand::Place(k)))).collect();
                 let r = self.edit.buttons[i];
-                self.menu.open_context(items, [r[0], r[3] + 2.0 * self.dpi]);
+                self.menu.open_context_above(items, [r[0], r[1] - 6.0 * self.dpi]);
             }
             return true;
         }
@@ -625,7 +637,7 @@ impl Ui {
         let t = self.view.transform(pane, self.dpi);
         let r = self.doc.diagram.nodes[node].rect();
         let (x, y) = (r[2] * t.scale + t.offset[0], (r[1] + r[3]) * 0.5 * t.scale + t.offset[1]);
-        let s = 9.0 * self.dpi;
+        let s = self.config.theme.size.diagram.handle * self.dpi;
         [x - s, y - s, x + s, y + s]
     }
 
@@ -658,40 +670,52 @@ impl Ui {
 
     // ---- drawing -----------------------------------------------------------------
 
-    /// The palette toolbar at the top of the diagram pane (base pass).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn draw_toolbar(&mut self, shapes: &mut ShapeRenderer, text: &mut TextRenderer, fonts: Fonts, theme: &Theme, bar: Rect, dpi: f32) {
+    /// The diagram palette: a floating glass group of "+ Structure" style
+    /// buttons, centered in `row` (chrome pass). Returns its rect.
+    pub(super) fn draw_toolbar(&mut self, shapes: &mut ShapeRenderer, text: &mut TextRenderer, fonts: Fonts, theme: &Theme, row: Rect, dpi: f32) -> Rect {
         let size = self.config.view.ui_font_size * dpi;
         let lh = text.line_metrics(fonts.body, size).line_height;
-        let pad = (8.0 * dpi).round();
+        let fs = &theme.size.frame;
+        let pad = (fs.toolbar_pad * dpi).round();
+        let h = (fs.control_height * dpi).round();
+        let widths: Vec<f32> = model_edit::palette()
+            .iter()
+            .map(|(group, _)| (text.measure(fonts.body, size, group, None)[0] + size * 1.2 + 26.0 * dpi).round())
+            .collect();
+        let w = widths.iter().sum::<f32>() + pad * (widths.len() as f32 + 1.0);
+        let x0 = ((row[0] + row[2] - w) * 0.5).round().max(row[0]);
+        let bar = [x0, row[1], x0 + w, row[1] + h + 2.0 * pad];
         shapes.begin_layer(Transform::IDENTITY, None);
-        shapes.rect(bar, theme.header.0, 0.0);
-        shapes.rect([bar[0], bar[3] - dpi, bar[2], bar[3]], theme.divider.0, 0.0);
+        super::glass_card(shapes, theme, bar, fs.control_radius * dpi + pad, dpi);
         text.set_clip(Some(bar));
         self.edit.buttons.clear();
         let mut x = bar[0] + pad;
         let ty = ((bar[1] + bar[3]) * 0.5 - lh * 0.5).round();
-        for (group, _) in model_edit::palette() {
-            let w = text.measure(fonts.body, size, group, None)[0] + size * 1.6 + pad * 1.6;
-            let r = [x, bar[1] + 4.0 * dpi, x + w, bar[3] - 4.0 * dpi];
-            let hot = contains(r, self.cursor);
-            shapes.bordered_rect(r, if hot { theme.hover_row.alpha(3.0) } else { [0.0; 4] }, theme.divider.0, 5.0 * dpi, dpi.max(1.0));
-            // "+" icon.
-            let (cx, cy, s) = (r[0] + pad * 0.6 + size * 0.4, (r[1] + r[3]) * 0.5, size * 0.3);
-            shapes.line([cx - s, cy], [cx + s, cy], theme.selection.0, 1.6 * dpi, 0.0);
-            shapes.line([cx, cy - s], [cx, cy + s], theme.selection.0, 1.6 * dpi, 0.0);
-            text.draw(TextStyle::new(fonts.body, size, theme.text.0), [cx + s + pad * 0.7, ty], group);
+        for ((group, _), bw) in model_edit::palette().into_iter().zip(widths) {
+            let r = [x, bar[1] + pad, x + bw, bar[3] - pad];
+            if contains(r, self.cursor) {
+                shapes.rect(r, theme.hover_row.alpha(3.0), fs.control_radius * dpi);
+            }
+            // "+" icon in the accent color.
+            let (cx, cy, s) = (r[0] + 12.0 * dpi + size * 0.3, (r[1] + r[3]) * 0.5, size * 0.3);
+            shapes.line([cx - s, cy], [cx + s, cy], theme.accent.0, 1.6 * dpi, 0.0);
+            shapes.line([cx, cy - s], [cx, cy + s], theme.accent.0, 1.6 * dpi, 0.0);
+            text.draw(TextStyle::new(fonts.body, size, theme.text.0), [cx + s + 7.0 * dpi, ty], group);
             self.edit.buttons.push(r);
-            x = r[2] + pad * 0.6;
+            x = r[2] + pad;
         }
-        let hint = match (&self.edit.place, &self.edit.field) {
-            (_, Some(_)) => "Enter applies · Esc cancels".to_owned(),
-            (Some(k), _) => format!("Click to place a {} · on a node it becomes a feature · Esc cancels", k.keyword()),
-            _ => "Drag the + handle on a node's edge to another node to relate them · right-click to add, type or delete · double-click to edit".to_owned(),
-        };
-        let color = if self.edit.place.is_some() { theme.selection.0 } else { theme.dim.0 };
-        text.draw(TextStyle::new(fonts.body, size * 0.92, color), [x + pad, ty], &hint);
         text.set_clip(None);
+        bar
+    }
+
+    /// What the diagram is waiting for, for the status bar; `true` while a
+    /// placement or an inline edit is in progress.
+    pub(super) fn edit_hint(&self) -> (String, bool) {
+        match (&self.edit.place, &self.edit.field) {
+            (_, Some(_)) => ("Enter applies · Esc cancels".to_owned(), true),
+            (Some(k), _) => (format!("Click to place a {} · on a node it becomes a feature · Esc cancels", k.keyword()), true),
+            _ => ("Drag + on a node's edge to relate · Right-click add, type, delete · Double-click edit".to_owned(), false),
+        }
     }
 
     /// Handle, connect line and the inline field (overlay pass, under menus).
@@ -710,10 +734,10 @@ impl Ui {
             let r = self.handle_rect(node, pane);
             self.edit.handle = Some((node, r));
             let hot = contains(r, self.cursor);
-            let fill = if hot { theme.selection.0 } else { theme.header.0 };
-            shapes.bordered_rect(r, fill, theme.selection.0, (r[2] - r[0]) * 0.5, 1.5 * dpi);
+            let fill = if hot { theme.accent.0 } else { theme.bg.bar.0 };
+            shapes.bordered_rect(r, fill, theme.accent.0, (r[2] - r[0]) * 0.5, 1.5 * dpi);
             let (cx, cy, s) = ((r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5, (r[2] - r[0]) * 0.25);
-            let c = if hot { [1.0; 4] } else { theme.selection.0 };
+            let c = if hot { theme.text_on_accent.0 } else { theme.accent.0 };
             shapes.line([cx - s, cy], [cx + s, cy], c, 1.5 * dpi, 0.0);
             shapes.line([cx, cy - s], [cx, cy + s], c, 1.5 * dpi, 0.0);
         }
@@ -723,13 +747,13 @@ impl Ui {
         {
             let from = self.handle_rect(link.from, pane);
             let a = [(from[0] + from[2]) * 0.5, (from[1] + from[3]) * 0.5];
-            shapes.line(a, link.at, theme.selection.0, 2.0 * dpi, 7.0 * dpi);
+            shapes.line(a, link.at, theme.accent.0, 2.0 * dpi, 7.0 * dpi);
             let world = self.view.to_world(link.at, pane, dpi);
             if let Some(t) = self.view.node_at(&self.doc.diagram, world).filter(|&t| t != link.from) {
                 let tr = self.view.transform(pane, dpi);
                 let r = self.doc.diagram.nodes[t].rect();
                 let s = [r[0] * tr.scale + tr.offset[0], r[1] * tr.scale + tr.offset[1], r[2] * tr.scale + tr.offset[0], r[3] * tr.scale + tr.offset[1]];
-                shapes.bordered_rect([s[0] - 3.0, s[1] - 3.0, s[2] + 3.0, s[3] + 3.0], [0.0; 4], theme.selection.0, 6.0 * dpi, 2.0 * dpi);
+                shapes.bordered_rect([s[0] - 3.0, s[1] - 3.0, s[2] + 3.0, s[3] + 3.0], Color::TRANSPARENT, theme.accent.0, 6.0 * dpi, 2.0 * dpi);
             }
         }
 
@@ -771,7 +795,7 @@ impl Ui {
         shapes.begin_overlay();
         text.begin_overlay();
         shapes.rect([r[0], r[1] + 2.0 * dpi, r[2] + 3.0 * dpi, r[3] + 5.0 * dpi], theme.node.shadow.0, 6.0 * dpi);
-        shapes.bordered_rect(r, theme.panel.0, theme.selection.0, 4.0 * dpi, 1.5 * dpi);
+        shapes.bordered_rect(r, theme.bg.panel.0, theme.accent.0, theme.size.diagram.field_radius * dpi, 1.5 * dpi);
         let size = ((r[3] - r[1]) * 0.55).clamp(11.0 * dpi, 22.0 * dpi);
         let lh = text.line_metrics(fonts.body, size).line_height;
         let pad = 6.0 * dpi;
@@ -790,7 +814,7 @@ impl Ui {
             let (a, b) = (w(&t[..sel.start()], text), w(&t[..sel.end()], text));
             shapes.rect([x + a, y, x + b, y + lh], theme.text_selection.0, 0.0);
         }
-        shapes.rect([x + caret, y, x + caret + 1.5 * dpi, y + lh], theme.cursor.0, 0.0);
+        shapes.rect([x + caret, y, x + caret + theme.size.frame.caret_width * dpi, y + lh], theme.cursor.0, 0.0);
         text.set_clip(Some(clip));
         text.draw(TextStyle::new(fonts.body, size, theme.text.0), [x, y], t);
         text.set_clip(None);

@@ -2,7 +2,7 @@
 //! the explorer of SysON / Sirius Web. Rows expand and collapse; a click
 //! selects the element in the code and the diagram.
 
-use crate::config::{Color, Theme};
+use crate::theme::{Color, KindPair, Theme};
 use crate::diagram_view::{Fonts, contains};
 use crate::document::TreeRow;
 use crate::shapes::{Rect, ShapeRenderer, Transform};
@@ -223,23 +223,23 @@ impl TreeView {
         dpi: f32,
     ) {
         let size = font_size * dpi;
-        let small = size * 0.85;
+        let sz = &theme.size.tree;
+        let small = size * sz.small_scale;
         let lh = text.line_metrics(fonts.body, size).line_height;
-        let row_h = (lh * 1.45).round();
-        let pad = (10.0 * dpi).round();
-        let header_h = (lh * 2.0).round();
-        let indent = (size * 1.25).round();
+        let row_h = sz.row_height.px(dpi, size, lh).round();
+        let pad = (sz.pad * dpi).round();
+        let header_h = sz.header_height.px(dpi, size, lh).round();
+        let indent = sz.indent.px(dpi, size, lh).round();
         let header = [pane[0], pane[1], pane[2], pane[1] + header_h];
         let body = [pane[0], header[3], pane[2], pane[3]];
 
         // Header: title and expand / collapse all.
+        // The card behind the pane provides the background.
         shapes.begin_layer(Transform::IDENTITY, None);
-        shapes.rect(pane, theme.panel.0, 0.0);
-        shapes.rect(header, theme.header.0, 0.0);
-        shapes.rect([header[0], header[3] - dpi, header[2], header[3]], theme.divider.0, 0.0);
-        let ty = header[1] + (header_h - text.line_metrics(fonts.title, small).line_height) * 0.5;
+        shapes.rect([header[0] - 3.0 * dpi, header[3] - dpi, header[2] + 3.0 * dpi, header[3]], theme.border.0, 0.0);
+        let ty = header[1] + (header_h - text.line_metrics(fonts.title, size).line_height) * 0.5;
         text.set_clip(Some(header));
-        text.draw(TextStyle::new(fonts.title, small, theme.dim.0), [pane[0] + pad, ty], "MODEL");
+        text.draw(TextStyle::new(fonts.title, size, theme.text.0), [pane[0] + pad + 2.0 * dpi, ty], "Model");
         let btn = (header_h * 0.62).round();
         let by = header[1] + ((header_h - btn) * 0.5).round();
         let collapse_button = [pane[2] - pad - btn, by, pane[2] - pad, by + btn];
@@ -247,20 +247,26 @@ impl TreeView {
         for (r, plus) in [(expand_button, true), (collapse_button, false)] {
             let hot = contains(r, self.mouse);
             if hot {
-                shapes.rect(r, theme.hover_row.alpha(2.5), 4.0 * dpi);
+                shapes.rect(r, theme.hover_row.alpha(2.5), sz.button_radius * dpi);
             }
-            let c = if hot { theme.text.0 } else { theme.dim.0 };
+            let c = if hot { theme.text.0 } else { theme.text_muted.0 };
             let (cx, cy, s) = ((r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5, btn * 0.22);
             // A box with + (expand all) or − (collapse all).
-            shapes.bordered_rect([cx - s * 1.6, cy - s * 1.6, cx + s * 1.6, cy + s * 1.6], [0.0; 4], c, 2.0 * dpi, dpi);
+            shapes.bordered_rect([cx - s * 1.6, cy - s * 1.6, cx + s * 1.6, cy + s * 1.6], Color::TRANSPARENT, c, 2.0 * dpi, dpi);
             shapes.line([cx - s * 0.8, cy], [cx + s * 0.8, cy], c, 1.2 * dpi, 0.0);
             if plus {
                 shapes.line([cx, cy - s * 0.8], [cx, cy + s * 0.8], c, 1.2 * dpi, 0.0);
             }
         }
         let count = format!("{}", rows.len());
+        // Element count in a chip.
         let cw = text.measure(fonts.body, small, &count, None)[0];
-        text.draw(TextStyle::new(fonts.body, small, theme.dim.alpha(0.8)), [expand_button[0] - pad * 0.6 - cw, ty], &count);
+        let clh = text.line_metrics(fonts.body, small).line_height;
+        let chip_h = (clh + 4.0 * dpi).round();
+        let cy = (header[1] + header[3]) * 0.5;
+        let chip = [expand_button[0] - pad * 0.6 - cw - 14.0 * dpi, cy - chip_h * 0.5, expand_button[0] - pad * 0.6, cy + chip_h * 0.5];
+        shapes.rect(chip, theme.glass.control.0, chip_h * 0.5);
+        text.draw(TextStyle::new(fonts.body, small, theme.text_muted.0), [chip[0] + 7.0 * dpi, (cy - clh * 0.5).round()], &count);
         text.set_clip(None);
 
         self.visible = visible_rows(rows, &self.expanded);
@@ -283,38 +289,41 @@ impl TreeView {
         shapes.begin_layer(Transform::IDENTITY, Some(body));
         text.set_clip(Some(body));
         if rows.is_empty() {
-            text.draw(TextStyle::new(fonts.body, size, theme.dim.0), [body[0] + pad, body[1] + pad], "No elements");
+            text.draw(TextStyle::new(fonts.body, size, theme.text_muted.0), [body[0] + pad, body[1] + pad], "No elements");
         }
         let first = (self.scroll / row_h).floor().max(0.0) as usize;
         let selected = self.selected_index(rows);
-        let badge = (lh * 0.95).round();
+        let badge = sz.badge.px(dpi, size, lh).round();
         for (vi, &ri) in self.visible.iter().enumerate().skip(first) {
             let y = body[1] + vi as f32 * row_h - self.scroll;
             if y > body[3] {
                 break;
             }
             let r = &rows[ri];
-            let row_rect = [body[0], y, body[2], y + row_h];
+            // Row highlights are rounded and inset from the card edges.
+            let row_rect = [body[0] + 2.0 * dpi, y + dpi, body[2] - 8.0 * dpi, y + row_h - dpi];
+            let row_radius = 6.0 * dpi;
             if selected == Some(ri) {
                 let c = if self.active { theme.selection_row.0 } else { theme.selection_row.alpha(0.6) };
-                shapes.rect(row_rect, c, 0.0);
+                shapes.rect(row_rect, c, row_radius);
                 if self.active {
-                    shapes.rect([body[0], y, body[0] + 2.0 * dpi, y + row_h], theme.selection.0, 0.0);
+                    let m = theme.size.frame.marker_width * dpi;
+                    shapes.rect([row_rect[0], row_rect[1] + 5.0 * dpi, row_rect[0] + m, row_rect[3] - 5.0 * dpi], theme.accent.0, m * 0.5);
                 }
             } else if self.hovered == Some(ri) {
-                shapes.rect(row_rect, theme.hover_row.0, 0.0);
+                shapes.rect(row_rect, theme.hover_row.0, row_radius);
             }
             // Indentation guides.
             for d in 0..r.depth {
                 let x = (body[0] + pad * 0.5 + indent * (d as f32 + 0.5)).round();
-                shapes.rect([x, y, x + dpi.max(1.0), y + row_h], theme.divider.alpha(0.6), 0.0);
+                shapes.rect([x, y, x + dpi.max(1.0), y + row_h], theme.border.alpha(0.6), 0.0);
             }
             let x0 = body[0] + pad * 0.5 + indent * r.depth as f32;
             let cy = y + row_h * 0.5;
             if r.has_children {
                 let open = is_open(&self.expanded, r);
                 let (cx, s) = (x0 + indent * 0.5, size * 0.2);
-                let c = theme.dim.0;
+                let c = theme.text_muted.0;
                 let t = 1.4 * dpi;
                 if open {
                     shapes.line([cx - s, cy - s * 0.5], [cx, cy + s * 0.5], c, t, 0.0);
@@ -326,7 +335,8 @@ impl TreeView {
             }
             // Kind badge: definitions filled, usages outlined (like SysML's
             // def / usage distinction), colored by category.
-            let color = category_color(theme, r.category);
+            let pair = category_colors(theme, r.category);
+            let color = pair.fg;
             let bx = x0 + indent;
             let b = [bx, cy - badge * 0.5, bx + badge, cy + badge * 0.5];
             let letter = badge_letter(r);
@@ -341,14 +351,14 @@ impl TreeView {
                     shapes.rect([b[0], b[1] + badge * 0.2, b[2], b[3] - badge * 0.05], color.0, 2.0 * dpi);
                 }
                 _ if r.is_definition => {
-                    shapes.rect(b, color.0, 3.0 * dpi);
-                    text.draw(TextStyle::new(fonts.title, letter_size, theme.panel.0), lp, &letter);
+                    shapes.rect(b, color.0, sz.badge_radius * dpi);
+                    text.draw(TextStyle::new(fonts.title, letter_size, theme.bg.panel.0), lp, &letter);
                 }
                 Category::Comment | Category::Import | Category::Expression => {
                     text.draw(TextStyle::new(fonts.title, letter_size, color.0), lp, &letter);
                 }
                 _ => {
-                    shapes.bordered_rect(b, color.alpha(0.14), color.0, badge * 0.5, 1.2 * dpi);
+                    shapes.bordered_rect(b, pair.bg.0, color.0, badge * 0.5, 1.2 * dpi);
                     text.draw(TextStyle::new(fonts.title, letter_size, color.0), lp, &letter);
                 }
             }
@@ -360,7 +370,7 @@ impl TreeView {
             if !r.label.is_empty() && !r.keyword.is_empty() {
                 let w = text.measure(fonts.body, size, label, None)[0];
                 let ky = cy - text.line_metrics(fonts.body, small).line_height * 0.5;
-                text.draw(TextStyle::new(fonts.body, small, theme.dim.0), [tx + w + pad * 0.6, ky], &r.keyword);
+                text.draw(TextStyle::new(fonts.body, small, theme.text_muted.0), [tx + w + pad * 0.6, ky], &r.keyword);
             }
         }
         text.set_clip(None);
@@ -370,23 +380,23 @@ impl TreeView {
             let h = (view_h * view_h / content_h).max(row_h);
             let t = self.scroll / (content_h - view_h);
             let y = body[1] + t * (view_h - h);
-            let w = 4.0 * dpi;
-            shapes.rect([body[2] - w - 2.0 * dpi, y, body[2] - 2.0 * dpi, y + h], theme.dim.alpha(0.35), w * 0.5);
+            let (w, inset) = (sz.scrollbar_width * dpi, sz.scrollbar_inset * dpi);
+            shapes.rect([body[2] - w - inset, y, body[2] - inset, y + h], theme.text_muted.alpha(0.35), w * 0.5);
         }
     }
 }
 
-fn category_color(theme: &Theme, c: Category) -> Color {
-    let o = &theme.outline;
+fn category_colors(theme: &Theme, c: Category) -> KindPair {
+    let k = &theme.kind;
     match c {
-        Category::Package => o.package,
-        Category::Import => o.import,
-        Category::Comment => o.comment,
-        Category::Definition => theme.node.definition,
-        Category::Usage => theme.node.usage,
-        Category::Relationship => o.relationship,
-        Category::Behavior => theme.node.behavior,
-        Category::Expression => o.expression,
+        Category::Package => k.package,
+        Category::Import => k.import,
+        Category::Comment => k.comment,
+        Category::Definition => k.definition,
+        Category::Usage => k.usage,
+        Category::Relationship => k.relationship,
+        Category::Behavior => k.behavior,
+        Category::Expression => k.expression,
     }
 }
 

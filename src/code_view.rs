@@ -3,7 +3,7 @@
 //! rename box. Editing logic lives in [`crate::editor`]; this is input and drawing.
 
 use crate::clipboard;
-use crate::config::Theme;
+use crate::theme::Theme;
 use crate::diagram_view::{Fonts, contains};
 use crate::editor::{Editor, FindOptions, Motion, find_matches};
 use crate::shapes::{Rect, ShapeRenderer, Transform};
@@ -654,11 +654,12 @@ impl CodeView {
         let size = font_size * dpi;
         let lh = text.line_metrics(fonts.mono, size).line_height.max(1.0).round();
         let adv = text.measure(fonts.mono, size, "0", None)[0].max(1.0);
-        let pad = (10.0 * dpi).round();
+        let sz = &theme.size.code;
+        let pad = (sz.pad * dpi).round();
         let count = self.editor.line_count();
 
         // ---- bar (find / replace / rename) ----
-        let field_h = (lh + 8.0 * dpi).round();
+        let field_h = (lh + sz.field_extra_height * dpi).round();
         let rows = if self.rename.is_some() {
             1
         } else if self.find.open {
@@ -668,13 +669,12 @@ impl CodeView {
         };
         let bar_h = if rows > 0 { pad * 0.6 + rows as f32 * (field_h + pad * 0.6) } else { 0.0 };
         let mut layout = Layout { line_height: lh, advance: adv, ..Default::default() };
+        // The card behind the pane provides the background.
         shapes.begin_layer(Transform::IDENTITY, None);
-        shapes.rect(pane, theme.panel.0, 0.0);
         if rows > 0 {
             let bar = [pane[0], pane[1], pane[2], pane[1] + bar_h];
             layout.bar = Some(bar);
-            shapes.rect(bar, theme.header.0, 0.0);
-            shapes.rect([bar[0], bar[3] - dpi, bar[2], bar[3]], theme.divider.0, 0.0);
+            shapes.rect([bar[0], bar[3] - dpi, bar[2], bar[3]], theme.border.0, 0.0);
             self.draw_bar(shapes, text, fonts, size, theme, bar, field_h, pad, dpi, &mut layout);
         }
 
@@ -751,7 +751,7 @@ impl CodeView {
             let y = line_y(l);
             if Some(l) == self.marked_line {
                 shapes.rect([code[0], y, code[2], y + lh], theme.selection_row.0, 0.0);
-                shapes.rect([code[0], y, code[0] + (2.0 * dpi).round(), y + lh], theme.selection.0, 0.0);
+                shapes.rect([code[0], y, code[0] + (theme.size.frame.marker_width * dpi).round(), y + lh], theme.accent.0, 0.0);
             } else if l == cursor_line && self.active {
                 shapes.rect([code[0], y, code[2], y + lh], theme.current_line.0, 0.0);
             }
@@ -786,8 +786,8 @@ impl CodeView {
                 if xb - xa < adv {
                     xb = xa + adv;
                 }
-                let y = line_y(l) + lh - 2.5 * dpi;
-                let step = 2.0 * dpi;
+                let y = line_y(l) + lh - sz.squiggle * 1.25 * dpi;
+                let step = sz.squiggle * dpi;
                 let mut x = xa;
                 let mut up = false;
                 while x < xb {
@@ -802,7 +802,7 @@ impl CodeView {
         // Cursors.
         let blink_on = (self.blink.elapsed().as_millis() / BLINK.as_millis()) % 2 == 0 || self.drag.is_some();
         if blink_on || !focused {
-            let w = (1.5 * dpi).round().max(1.0);
+            let w = (theme.size.frame.caret_width * dpi).round().max(1.0);
             let color = if focused { theme.cursor.0 } else { theme.cursor.alpha(0.35) };
             if focused || self.active {
                 for s in ed.selections() {
@@ -854,7 +854,7 @@ impl CodeView {
         for l in first..last {
             let n = (l + 1).to_string();
             let w = n.len() as f32 * adv;
-            let color = if l == cursor_line { theme.text.alpha(0.85) } else { theme.dim.alpha(0.6) };
+            let color = if l == cursor_line { theme.text.alpha(0.85) } else { theme.text_muted.alpha(0.6) };
             text.draw(TextStyle::new(fonts.mono, size, color), [code[0] + gutter - w, line_y(l)], &n);
         }
         text.set_clip(None);
@@ -863,10 +863,10 @@ impl CodeView {
         let total = count as f32 + 3.0;
         if total > layout.visible as f32 {
             let track = code[3] - code[1];
-            let h = (track * layout.visible as f32 / total).max(20.0 * dpi);
+            let h = (track * layout.visible as f32 / total).max(sz.scrollbar_min_length * dpi);
             let y = code[1] + (track - h) * (self.scroll[1] / max_scroll.max(1.0));
-            let x = code[2] - 5.0 * dpi;
-            shapes.rect([x, y, x + 3.0 * dpi, y + h], theme.dim.alpha(0.35), 1.5 * dpi);
+            let (sw, x) = (sz.scrollbar_width * dpi, code[2] - (sz.scrollbar_width + sz.scrollbar_inset) * dpi);
+            shapes.rect([x, y, x + sw, y + h], theme.text_muted.alpha(0.35), sw * 0.5);
         }
     }
 
@@ -904,14 +904,15 @@ impl CodeView {
         dpi: f32,
         layout: &mut Layout,
     ) {
-        let label_size = size * 0.92;
+        let sz = &theme.size.code;
+        let label_size = size * sz.label_scale;
         let adv = layout.advance;
         let mut y = bar[1] + pad * 0.6;
         let button = |shapes: &mut ShapeRenderer, text: &mut TextRenderer, x: f32, y: f32, label: &str, on: bool| -> Rect {
             let w = text.measure(fonts.body, label_size, label, None)[0] + pad;
             let r = [x, y, x + w, y + field_h];
-            let fill = if on { theme.selection.alpha(0.35) } else { theme.panel.0 };
-            shapes.bordered_rect(r, fill, if on { theme.selection.0 } else { theme.divider.0 }, 3.0 * dpi, dpi);
+            let fill = if on { theme.accent.alpha(0.35) } else { theme.bg.panel.0 };
+            shapes.bordered_rect(r, fill, if on { theme.accent.0 } else { theme.border.0 }, sz.field_radius * dpi, dpi);
             let lh = text.line_metrics(fonts.body, label_size).line_height;
             text.draw(TextStyle::new(fonts.body, label_size, theme.text.0), [x + pad * 0.5, y + (field_h - lh) * 0.5], label);
             r
@@ -921,7 +922,7 @@ impl CodeView {
             let label = format!("Rename {} to", r.old);
             let lw = text.measure(fonts.body, label_size, &label, None)[0];
             let llh = text.line_metrics(fonts.body, label_size).line_height;
-            text.draw(TextStyle::new(fonts.body, label_size, theme.dim.0), [bar[0] + pad, y + (field_h - llh) * 0.5], &label);
+            text.draw(TextStyle::new(fonts.body, label_size, theme.text_muted.0), [bar[0] + pad, y + (field_h - llh) * 0.5], &label);
             let fx = bar[0] + pad * 1.6 + lw;
             let rect = [fx, y, bar[2] - pad, y + field_h];
             let g = self.draw_field(shapes, text, fonts, size, theme, &r.field, rect, self.focus == Focus::Rename, adv, dpi, "");
@@ -945,7 +946,7 @@ impl CodeView {
         };
         let cw = text.measure(fonts.body, label_size, "0000 of 0000", None)[0];
         let llh = text.line_metrics(fonts.body, label_size).line_height;
-        let color = if self.find.matches.is_empty() && !self.find.query.text().is_empty() { theme.error.0 } else { theme.dim.0 };
+        let color = if self.find.matches.is_empty() && !self.find.query.text().is_empty() { theme.error.0 } else { theme.text_muted.0 };
         right -= cw;
         text.draw(TextStyle::new(fonts.body, label_size, color), [right, y + (field_h - llh) * 0.5], &count);
         right -= pad * 0.5;
@@ -958,8 +959,8 @@ impl CodeView {
         // Close "×" drawn as two lines.
         let c = [(close[0] + close[2]) * 0.5, (close[1] + close[3]) * 0.5];
         let k = field_h * 0.18;
-        shapes.line([c[0] - k, c[1] - k], [c[0] + k, c[1] + k], theme.dim.0, 1.5 * dpi, 0.0);
-        shapes.line([c[0] - k, c[1] + k], [c[0] + k, c[1] - k], theme.dim.0, 1.5 * dpi, 0.0);
+        shapes.line([c[0] - k, c[1] - k], [c[0] + k, c[1] + k], theme.text_muted.0, 1.5 * dpi, 0.0);
+        shapes.line([c[0] - k, c[1] + k], [c[0] + k, c[1] - k], theme.text_muted.0, 1.5 * dpi, 0.0);
         let rect = [bar[0] + pad, y, right, y + field_h];
         layout.find = self.draw_field(shapes, text, fonts, size, theme, &self.find.query, rect, self.focus == Focus::Find, adv, dpi, "Find");
         layout.case_button = case;
@@ -997,9 +998,10 @@ impl CodeView {
         dpi: f32,
         placeholder: &str,
     ) -> FieldGeom {
-        let border = if focused { theme.selection.0 } else { theme.divider.0 };
-        shapes.bordered_rect(rect, theme.panel.0, border, 3.0 * dpi, dpi);
-        let inner = 6.0 * dpi;
+        let border = if focused { theme.accent.0 } else { theme.border.0 };
+        let sz = &theme.size.code;
+        shapes.bordered_rect(rect, theme.bg.panel.0, border, sz.field_radius * dpi, dpi);
+        let inner = sz.field_pad * dpi;
         let lh = text.line_metrics(fonts.mono, size).line_height;
         let y = rect[1] + ((rect[3] - rect[1]) - lh) * 0.5;
         let avail = rect[2] - rect[0] - inner * 2.0;
@@ -1014,7 +1016,7 @@ impl CodeView {
         text.set_clip(Some(clip));
         if ed.text().is_empty() {
             if !focused {
-                text.draw(TextStyle::new(fonts.body, size * 0.92, theme.dim.alpha(0.7)), [x0, y], placeholder);
+                text.draw(TextStyle::new(fonts.body, size * sz.label_scale, theme.text_muted.alpha(0.7)), [x0, y], placeholder);
             }
         } else {
             text.draw(TextStyle::new(fonts.mono, size, theme.text.0), [x0, y], ed.text());
@@ -1023,7 +1025,7 @@ impl CodeView {
         let blink_on = (self.blink.elapsed().as_millis() / BLINK.as_millis()) % 2 == 0;
         if focused && self.active && blink_on {
             let x = (x0 + cursor_x).round();
-            shapes.rect([x, y, x + (1.5 * dpi).round().max(1.0), y + lh], theme.cursor.0, 0.0);
+            shapes.rect([x, y, x + (theme.size.frame.caret_width * dpi).round().max(1.0), y + lh], theme.cursor.0, 0.0);
         }
         FieldGeom { rect, text_x: x0 }
     }
@@ -1037,7 +1039,7 @@ fn floor_boundary(s: &str, mut i: usize) -> usize {
 }
 
 fn highlight_color(theme: &Theme, h: Highlight) -> [f32; 4] {
-    let o = &theme.outline;
+    let o = &theme.syntax;
     match h {
         Highlight::Keyword => o.keyword,
         Highlight::Definition => o.definition,

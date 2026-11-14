@@ -2,14 +2,12 @@
 # Pick it with [view] theme = "nord" or the Settings > Theme menu.
 
 [theme]
-background = "#2e3440"
-header = "#272c36"
-panel = "#2e3440"
-divider = "#3b4252"
+border = "#3b4252"
 text = "#eceff4"
-dim = "#9aa5b8"
+text_muted = "#9aa5b8"
 error = "#bf616a"
-selection = "#88c0d0"
+success = "#a3be8c"
+accent = "#88c0d0"
 selection_row = "#88c0d030"
 hover_row = "#d8dee910"
 grid = "#333a47"
@@ -18,7 +16,13 @@ text_selection = "#81a1c155"
 find_match = "#ebcb8b55"
 current_line = "#3b425280"
 
-[theme.outline]
+[theme.bg]                # surfaces, from the window inwards
+app = "#272c36"         # behind the panels
+panel = "#2e3440"       # code editor, model tree
+canvas = "#2e3440"      # diagram
+bar = "#272c36"         # menu bar, header, toolbars, popups
+
+[theme.syntax]
 package = "#81a1c1"
 import = "#7b88a1"
 comment = "#7b88a1"
@@ -38,10 +42,17 @@ separator = "#3b4252"
 name = "#eceff4"
 compartment = "#d8dee9"
 shadow = "#1d212966"
-definition = "#ebcb8b"
-usage = "#88c0d0"
-behavior = "#b48ead"
-requirement = "#a3be8c"
+
+[theme.kind]              # fg: badge letter, keyword, outline; bg: tinted fill
+package = { fg = "#81a1c1", bg = "#81a1c124" }
+import = { fg = "#7b88a1", bg = "#7b88a124" }
+comment = { fg = "#7b88a1", bg = "#7b88a124" }
+definition = { fg = "#ebcb8b", bg = "#ebcb8b24" }
+usage = { fg = "#88c0d0", bg = "#88c0d024" }
+relationship = { fg = "#a3be8c", bg = "#a3be8c24" }
+behavior = { fg = "#b48ead", bg = "#b48ead24" }
+requirement = { fg = "#a3be8c", bg = "#a3be8c24" }
+expression = { fg = "#8fbcbb", bg = "#8fbcbb24" }
 
 [theme.edge]
 specialization = "#9aa5b8"
@@ -53,3 +64,12 @@ connection = "#d8dee9"
 flow = "#8fbcbb"
 allocation = "#d08770"
 label = "#9aa5b8"
+
+[theme.glass]
+fill = "#3b4252d9"
+bar = "#2e3440cc"
+border = "#434c5e"
+highlight = "#ffffff0d"
+shadow = "#0000007a"
+control = "#ffffff12"
+control_active = "#4c566a"

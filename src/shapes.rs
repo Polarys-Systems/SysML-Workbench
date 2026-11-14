@@ -8,7 +8,11 @@
 //! Per frame: queue shapes, [`ShapeRenderer::prepare`] once (after
 //! `begin_frame`), then [`ShapeRenderer::record`] once inside the render pass.
 
-use gpu::{Buffer, ColorTarget, Command, Device, MemoryKind, Pipeline, PipelineDesc, vk};
+use crate::backdrop::Backdrop;
+use gpu::{
+    BindingDesc, BindingLayout, BindingSet, BindingValue, BindingWrite, Buffer, ColorTarget, Command, Device, MemoryKind,
+    Pipeline, PipelineDesc, vk,
+};
 use std::sync::Arc;
 
 pub type Color = [f32; 4];
@@ -17,6 +21,17 @@ pub type Rect = [f32; 4];
 
 const KIND_RECT: f32 = 0.0;
 const KIND_LINE: f32 = 1.0;
+const KIND_GLASS: f32 = 2.0;
+
+/// Draw passes, in order. Each pass draws its shapes and then its text (the
+/// text renderer uses the same passes), so a pass covers all of the earlier
+/// ones, text included.
+pub const PASS_CANVAS: u8 = 0;
+/// Panels and bars floating over the canvas.
+pub const PASS_CHROME: u8 = 1;
+/// Menus, popups and dialogs.
+pub const PASS_OVERLAY: u8 = 2;
+pub const PASSES: u8 = 3;
 
 /// Matches `Shape` in shaders/shape.vert (std430, 64 bytes).
 #[repr(C)]
@@ -63,25 +78,36 @@ struct Layer {
     count: u32,
     transform: Transform,
     clip: Option<Rect>,
-    /// Drawn in the overlay pass, above all base text (menus, popups).
-    overlay: bool,
+    /// Draw pass (`PASS_*`).
+    pass: u8,
 }
 
 pub struct ShapeRenderer {
     buffers: Vec<Option<Buffer>>,
     pipeline: Pipeline,
+    /// The blurred canvas that glass rects sample.
+    _backdrop_layout: BindingLayout,
+    backdrop_set: BindingSet,
     device: Arc<Device>,
     shapes: Vec<Shape>,
     layers: Vec<Layer>,
     slot: usize,
     prepared: Option<(usize, Vec<Layer>)>,
-    /// Layers started from now on belong to the overlay pass.
-    overlay: bool,
+    /// Pass of the layers started from now on.
+    pass: u8,
 }
 
 impl ShapeRenderer {
-    /// The device must have been created with `buffer_device_address`.
-    pub fn new(device: &Arc<Device>, target_format: vk::Format) -> gpu::Result<Self> {
+    /// The device must have been created with `buffer_device_address`. Glass
+    /// rects sample `backdrop`'s blurred image.
+    pub fn new(device: &Arc<Device>, target_format: vk::Format, backdrop: &Backdrop) -> gpu::Result<Self> {
+        let backdrop_layout = device.create_binding_layout(&[BindingDesc {
+            binding: 0,
+            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            stages: vk::ShaderStageFlags::FRAGMENT,
+            count: 1,
+        }])?;
+        let backdrop_set = device.create_binding_set(&backdrop_layout)?;
         let vertex_spirv = read_spirv(include_bytes!(concat!(env!("OUT_DIR"), "/shape.vert.spv")));
         let fragment_spirv = read_spirv(include_bytes!(concat!(env!("OUT_DIR"), "/shape.frag.spv")));
         let mut color = ColorTarget::opaque(target_format);
@@ -97,6 +123,7 @@ impl ShapeRenderer {
             fragment_spirv: &fragment_spirv,
             colors: &[color],
             topology: vk::PrimitiveTopology::TRIANGLE_STRIP,
+            layouts: &[&backdrop_layout],
             push_ranges: &[vk::PushConstantRange {
                 stage_flags: vk::ShaderStageFlags::VERTEX,
                 offset: 0,
@@ -104,28 +131,53 @@ impl ShapeRenderer {
             }],
             ..Default::default()
         })?;
-        Ok(Self {
+        let mut renderer = Self {
             buffers: (0..gpu::FRAMES).map(|_| None).collect(),
             pipeline,
+            _backdrop_layout: backdrop_layout,
+            backdrop_set,
             device: device.clone(),
             shapes: Vec::new(),
             layers: Vec::new(),
             slot: 0,
             prepared: None,
-            overlay: false,
-        })
+            pass: PASS_CANVAS,
+        };
+        renderer.set_backdrop(backdrop)?;
+        Ok(renderer)
+    }
+
+    /// Points glass rects at `backdrop`'s current images (after it was resized).
+    /// The GPU must not be using the previous ones.
+    pub fn set_backdrop(&mut self, backdrop: &Backdrop) -> gpu::Result<()> {
+        self.device.write_bindings(&[BindingWrite {
+            set: &self.backdrop_set,
+            binding: 0,
+            first_element: 0,
+            values: &[BindingValue::TextureSampler {
+                texture: backdrop.blurred(),
+                sampler: backdrop.sampler(),
+                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            }],
+        }])
     }
 
     /// Starts a new layer; following shapes use its transform and clip.
     pub fn begin_layer(&mut self, transform: Transform, clip: Option<Rect>) {
         let first = self.shapes.len() as u32;
-        self.layers.push(Layer { first, count: 0, transform, clip, overlay: self.overlay });
+        self.layers.push(Layer { first, count: 0, transform, clip, pass: self.pass });
     }
 
-    /// Layers started after this call draw in the overlay pass (see [`Self::record`]).
-    pub fn begin_overlay(&mut self) {
-        self.overlay = true;
+    /// Layers started after this call draw in `pass` (or the current pass if
+    /// that is later), above everything of the earlier passes, text included.
+    pub fn begin_pass(&mut self, pass: u8) {
+        self.pass = self.pass.max(pass);
         self.begin_layer(Transform::IDENTITY, None);
+    }
+
+    /// Layers started after this call draw in the overlay pass (menus, popups).
+    pub fn begin_overlay(&mut self) {
+        self.begin_pass(PASS_OVERLAY);
     }
 
     fn push(&mut self, shape: Shape) {
@@ -146,6 +198,17 @@ impl ShapeRenderer {
         self.push(Shape { geom: rect, fill, stroke, params: [KIND_RECT, radius, border, 0.0] });
     }
 
+    /// Frosted glass: the blurred canvas behind `rect`, tinted by `tint` (its
+    /// alpha is how much of the tint covers the canvas), with a border.
+    pub fn glass(&mut self, rect: Rect, tint: Color, stroke: Color, radius: f32, border: f32) {
+        self.push(Shape { geom: rect, fill: tint, stroke, params: [KIND_GLASS, radius, border, 0.0] });
+    }
+
+    /// A soft shadow: `rect` with its edge blurred over `blur` pixels each way.
+    pub fn shadow(&mut self, rect: Rect, color: Color, radius: f32, blur: f32) {
+        self.push(Shape { geom: rect, fill: color, stroke: color, params: [KIND_RECT, radius, 0.0, blur.max(0.0)] });
+    }
+
     /// Line segment with round caps; `dash > 0` draws dashes of that length.
     pub fn line(&mut self, a: [f32; 2], b: [f32; 2], color: Color, thickness: f32, dash: f32) {
         self.push(Shape {
@@ -160,7 +223,7 @@ impl ShapeRenderer {
     pub fn discard(&mut self) {
         self.shapes.clear();
         self.layers.clear();
-        self.overlay = false;
+        self.pass = PASS_CANVAS;
     }
 
     /// Writes this frame's shapes to the GPU. Clears the queue.
@@ -180,7 +243,7 @@ impl ShapeRenderer {
         }
         let layers = self.layers.drain(..).filter(|l| l.count > 0).collect();
         self.shapes.clear();
-        self.overlay = false;
+        self.pass = PASS_CANVAS;
         self.prepared = Some((slot, layers));
         Ok(())
     }
@@ -195,15 +258,15 @@ impl ShapeRenderer {
         result
     }
 
-    /// Draws the base (`overlay == false`) or the overlay layers of what the
+    /// Draws the layers of `pass` from what the
     /// last [`Self::prepare`] built, then restores the full-target viewport and
     /// scissor for whatever is recorded next.
-    pub fn record(&mut self, cmd: &mut Command, target: vk::Extent2D, overlay: bool) -> gpu::Result<()> {
+    pub fn record(&mut self, cmd: &mut Command, target: vk::Extent2D, pass: u8) -> gpu::Result<()> {
         let Some((slot, layers)) = &self.prepared else {
             return Err(gpu::Error::InvalidState("ShapeRenderer::prepare was not called"));
         };
         let slot = *slot;
-        let layers: Vec<Layer> = layers.iter().filter(|l| l.overlay == overlay).copied().collect();
+        let layers: Vec<Layer> = layers.iter().filter(|l| l.pass == pass).copied().collect();
         if layers.is_empty() || target.width == 0 || target.height == 0 {
             return Ok(());
         }
@@ -218,6 +281,7 @@ impl ShapeRenderer {
             max_depth: 1.0,
         };
         cmd.bind_pipeline(&self.pipeline)?;
+        cmd.bind_set(0, &self.backdrop_set)?;
         for layer in &layers {
             let scissor = layer.clip.map_or(full, |c| clip_rect(c, target));
             if scissor.extent.width == 0 || scissor.extent.height == 0 {

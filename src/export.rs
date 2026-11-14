@@ -71,8 +71,8 @@ fn render(
         colors: &[Attachment::clear_color(&target, clear)],
         ..Default::default()
     })?;
-    shapes.record(&mut cmd, extent, false)?;
-    text.record(&mut cmd, extent, false)?;
+    shapes.record(&mut cmd, extent, crate::shapes::PASS_CANVAS)?;
+    text.record(&mut cmd, extent, crate::shapes::PASS_CANVAS)?;
     cmd.end_render()?;
     cmd.copy_texture_to_buffer(&target, &readback, 0)?;
     cmd.submit()?;

@@ -4,18 +4,22 @@
 
 use crate::code_view::{CodeView, Focus, KeyInput, Mods};
 use crate::config::{self, Config, FontConfig, MAX_RECENT, ViewConfig, ViewMode};
+use crate::theme::Theme;
 use crate::diagram::{Diagram, EdgeKind};
 use crate::diagram_view::{DiagramView, Fonts, TextMetrics, contains};
 use crate::dialog::{self, SaveChoice};
 use crate::document::{self, Document};
 use crate::menu::{Command, Item, Menu, MenuBar};
-use crate::shapes::{Rect, ShapeRenderer, Transform};
+use crate::shapes::{PASS_CHROME, Rect, ShapeRenderer, Transform};
 use crate::text::{TextRenderer, TextStyle};
 use crate::tree_view::{TreeEvent, TreeView};
 use std::path::{Path, PathBuf};
 
 #[path = "ui_edit.rs"]
 mod edit;
+#[path = "ui_chrome.rs"]
+mod chrome;
+use chrome::glass_card;
 use std::time::{Duration, Instant, SystemTime};
 use winit::event::MouseButton;
 use winit::keyboard::{Key, NamedKey};
@@ -95,6 +99,8 @@ struct Panes {
     diagram: Option<Rect>,
     tree_divider: Option<Rect>,
     tree: Option<Rect>,
+    /// Right edge of the model tree card (its width is dragged from the left edge).
+    tree_right: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,6 +134,8 @@ pub struct Ui {
     show_shortcuts: bool,
     /// Editing the model from the diagram.
     edit: edit::EditState,
+    /// Top bar, status bar and floating cards.
+    chrome: chrome::ChromeState,
     mode: ViewMode,
     split: f32,
     fonts: Option<Fonts>,
@@ -179,6 +187,7 @@ impl Ui {
             menu: MenuBar::default(),
             show_shortcuts: false,
             edit: edit::EditState::default(),
+            chrome: chrome::ChromeState::default(),
             fonts: None,
             fonts_dirty: true,
             needs_measure: true,
@@ -211,9 +220,14 @@ impl Ui {
         format!("EagleView - {}{dot}", self.doc.path.display())
     }
 
+    /// Blur radius of the frosted glass in physical pixels (0: off).
+    pub fn backdrop_blur(&self, dpi: f32) -> f32 {
+        self.config.theme.size.frame.backdrop_blur * dpi
+    }
+
     /// Linear clear color for the frame.
     pub fn clear_color(&self) -> [f32; 4] {
-        self.config.theme.background.linear()
+        self.config.theme.bg.canvas.linear()
     }
 
     fn divider_at(&self, p: [f32; 2]) -> Option<Divider> {
@@ -232,10 +246,12 @@ impl Ui {
         let p = self.cursor;
         if self.menu.is_open() || self.show_shortcuts || self.menu.hit(p) {
             CursorIcon::Default
-        } else if self.placing() && self.panes.diagram.is_some_and(|d| contains(d, p)) {
-            CursorIcon::Crosshair
         } else if self.dragging.is_some() || self.divider_at(p).is_some() {
             CursorIcon::ColResize
+        } else if let Some(icon) = self.chrome_cursor_icon(p) {
+            icon
+        } else if self.placing() && !self.over_chrome(p) && self.panes.diagram.is_some_and(|d| contains(d, p)) {
+            CursorIcon::Crosshair
         } else if self.panes.code.is_some() && (self.code.wants_text_cursor(p) || self.code.is_dragging()) {
             CursorIcon::Text
         } else {
@@ -787,7 +803,8 @@ impl Ui {
 
     fn zoom_center(&mut self, factor: f32) {
         if let Some(pane) = self.panes.diagram {
-            let c = [(pane[0] + pane[2]) * 0.5, (pane[1] + pane[3]) * 0.5];
+            let a = self.view.focus_in(pane);
+            let c = [(a[0] + a[2]) * 0.5, (a[1] + a[3]) * 0.5];
             self.view.zoom_at(c, factor, pane, self.dpi, &self.config.diagram);
         }
     }
@@ -984,6 +1001,16 @@ impl Ui {
             }
             Command::ReloadSettings => self.reload_config(),
             Command::Shortcuts => self.show_shortcuts = true,
+            Command::GotoProblem(i) => {
+                if let Some(offset) = self.doc.diagnostics.get(usize::from(i)).map(|d| d.span.start) {
+                    if self.mode == ViewMode::Diagram {
+                        self.mode = ViewMode::Split;
+                    }
+                    self.code.goto(offset);
+                    self.code.active = true;
+                    self.tree.active = false;
+                }
+            }
             Command::About => self.notify(concat!(
                 "EagleView ",
                 env!("CARGO_PKG_VERSION"),
@@ -1009,9 +1036,10 @@ impl Ui {
                 return;
             }
             Some(Divider::Tree) => {
-                let w = (self.panes.window[0] - p[0]) / self.dpi;
-                let max = (self.panes.window[0] / self.dpi * 0.6).max(160.0);
-                self.config.view.tree_width = w.clamp(160.0, max);
+                let w = (self.panes.tree_right - p[0]) / self.dpi;
+                let min = self.config.theme.size.frame.pane_min_width;
+                let max = (self.panes.window[0] / self.dpi * 0.6).max(min);
+                self.config.view.tree_width = w.clamp(min, max);
                 return;
             }
             None => {}
@@ -1030,7 +1058,12 @@ impl Ui {
             return;
         }
         if let Some(pane) = self.panes.diagram {
-            self.view.motion(&mut self.doc.diagram, p, pane, self.dpi, &self.config.diagram);
+            // Drags continue under the cards; hovering does not reach through them.
+            if self.view.is_dragging() || !self.over_chrome(p) {
+                self.view.motion(&mut self.doc.diagram, p, pane, self.dpi, &self.config.diagram);
+            } else {
+                self.view.hovered = None;
+            }
         }
         self.edit_motion(p);
     }
@@ -1070,23 +1103,45 @@ impl Ui {
                 return;
             }
         }
-        if matches!(button, MouseButton::Left | MouseButton::Right) && self.edit_press(button == MouseButton::Left, p) {
+        let left = button == MouseButton::Left;
+        if self.press_field(p) {
+            return;
+        }
+        // Floating chrome first, then the card resize grips, the cards, and
+        // last the canvas behind them.
+        if self.chrome_press(p, left) {
+            return;
+        }
+        if left && let Some(d) = self.divider_at(p) {
+            self.dragging = Some(d);
+            return;
+        }
+        match self.card_at(p) {
+            Some(chrome::Card::Tree) => {
+                self.code.active = false;
+                if left
+                    && self.panes.tree.is_some_and(|r| contains(r, p))
+                    && let Some(TreeEvent::Select(row)) = self.tree.press(&self.doc.tree, p)
+                {
+                    self.show_row(row);
+                }
+                return;
+            }
+            Some(chrome::Card::Code) => {
+                self.tree.active = false;
+                if left && self.panes.code.is_some_and(|r| contains(r, p)) && self.code.press(p, self.mods) {
+                    self.select_at_cursor();
+                }
+                return;
+            }
+            None => {}
+        }
+        if matches!(button, MouseButton::Left | MouseButton::Right) && self.edit_press(left, p) {
             self.code.active = false;
             self.tree.active = false;
             return;
         }
-        if button == MouseButton::Left
-            && let Some(d) = self.divider_at(p)
-        {
-            self.dragging = Some(d);
-        } else if let Some(_pane) = self.panes.tree.filter(|&r| contains(r, p)) {
-            self.code.active = false;
-            if button == MouseButton::Left
-                && let Some(TreeEvent::Select(row)) = self.tree.press(&self.doc.tree, p)
-            {
-                self.show_row(row);
-            }
-        } else if let Some(pane) = self.panes.diagram.filter(|&r| contains(r, p)) {
+        if let Some(pane) = self.panes.diagram.filter(|&r| contains(r, p)) {
             self.code.active = false;
             self.tree.active = false;
             let before = self.view.selected;
@@ -1097,11 +1152,6 @@ impl Ui {
                 let offset = name.as_deref().and_then(|n| self.doc.offset_of(n));
                 self.code.mark_offset(offset, true);
                 self.sync_tree_to(name.as_deref());
-            }
-        } else if button == MouseButton::Left && self.panes.code.is_some_and(|r| contains(r, p)) {
-            self.tree.active = false;
-            if self.code.press(p, self.mods) {
-                self.select_at_cursor();
             }
         }
     }
@@ -1152,14 +1202,19 @@ impl Ui {
         if self.menu.is_open() || self.show_shortcuts {
             return;
         }
-        if self.panes.tree.is_some_and(|r| contains(r, p)) {
-            self.tree.wheel(lines);
-            self.tree.motion(p);
-        } else if let Some(pane) = self.panes.diagram.filter(|&r| contains(r, p)) {
-            let factor = self.config.diagram.zoom_speed.max(1.001).powf(lines);
-            self.view.zoom_at(p, factor, pane, self.dpi, &self.config.diagram);
-        } else if self.panes.code.is_some_and(|r| contains(r, p)) {
-            self.code.wheel(lines, self.mods.shift);
+        match self.card_at(p) {
+            Some(chrome::Card::Tree) => {
+                self.tree.wheel(lines);
+                self.tree.motion(p);
+            }
+            Some(chrome::Card::Code) => self.code.wheel(lines, self.mods.shift),
+            None if self.over_chrome(p) => {}
+            None => {
+                if let Some(pane) = self.panes.diagram.filter(|&r| contains(r, p)) {
+                    let factor = self.config.diagram.zoom_speed.max(1.001).powf(lines);
+                    self.view.zoom_at(p, factor, pane, self.dpi, &self.config.diagram);
+                }
+            }
         }
     }
 
@@ -1301,7 +1356,7 @@ impl Ui {
         if let (true, Some(fonts)) = (self.needs_measure, self.fonts) {
             self.needs_measure = false;
             let cfg = &self.config.diagram;
-            let mut metrics = TextMetrics { text, fonts, font_size: cfg.font_size };
+            let mut metrics = TextMetrics { text, fonts, font_size: cfg.font_size, sizes: &self.config.theme.size.diagram };
             self.doc.diagram.measure(cfg, &mut metrics);
             self.doc.diagram.auto_layout(cfg);
             if let Some(s) = self.view.selected
@@ -1336,157 +1391,37 @@ impl Ui {
         let menus = self.build_menus();
         self.menu.set_menus(menus);
         let theme = self.config.theme.clone();
-        let view_cfg = self.config.view.clone();
-        let code_active = self.code.active && self.mode != ViewMode::Diagram;
+        self.layout_panes(width, height, dpi);
 
-        // ---- menu bar (drawn last, so its popups cover everything) ----
-        let ui_size = view_cfg.ui_font_size * dpi;
-        let menu_h = (text.line_metrics(fonts.body, ui_size).line_height * 1.75).round();
-        let menu_rect = [0.0, 0.0, width, menu_h];
-
-        // ---- header ----
-        let pad = 14.0 * dpi;
-        let title_size = view_cfg.title_font_size * dpi;
-        let status_size = view_cfg.status_font_size * dpi;
-        let title_lh = text.line_metrics(fonts.title, title_size).line_height;
-        let status_lh = text.line_metrics(fonts.body, status_size).line_height;
-        let problems = self.doc.diagnostics.len();
-        let shown_diags = problems.min(view_cfg.max_diagnostics);
-        let more_diags = problems > shown_diags;
-        let extra = shown_diags
-            + usize::from(more_diags)
-            + usize::from(self.config_error.is_some())
-            + usize::from(self.doc.load_error.is_some());
-        let header_top = menu_h;
-        let header_h = (pad * 1.6 + title_lh + status_lh * (1 + extra) as f32).round();
-        let header_bottom = header_top + header_h;
-
+        // ---- canvas: the diagram fills the window behind everything ----
         shapes.begin_layer(Transform::IDENTITY, None);
-        shapes.rect([0.0, header_top, width, header_bottom], theme.header.0, 0.0);
-        shapes.rect([0.0, header_bottom - dpi, width, header_bottom], theme.divider.0, 0.0);
-
-        let mut y = header_top + pad * 0.8;
-        let title = self.doc.file_name();
-        text.draw(TextStyle::new(fonts.title, title_size, theme.text.0), [pad, y], &title);
-        if self.modified() {
-            let w = text.measure(fonts.title, title_size, &title, None)[0];
-            text.draw(TextStyle::new(fonts.title, title_size, theme.dim.0), [pad + w, y], "  ●");
-        }
-        y += title_lh;
-        let mode = match self.mode {
-            ViewMode::Split => "split",
-            ViewMode::Diagram => "diagram",
-            ViewMode::Outline => "code",
-        };
-        let hints = if self.tree.active {
-            "Arrows move · Left/Right fold · Enter show · Ctrl+B hide tree"
-        } else if code_active {
-            "Ctrl+S save · Ctrl+F find · Ctrl+H replace · F2 rename · Shift+Alt+F format · Ctrl+D next match · Ctrl+Tab view"
-        } else {
-            "Tab view · F fit · L re-layout · G grid · C compartments · Ctrl+S save · F5 reload"
-        };
-        let cursor = if self.mode != ViewMode::Diagram { format!("{} · ", self.code.status()) } else { String::new() };
-        let mut status = format!(
-            "{cursor}{} elements · {} nodes · {} problem{} · {mode} view    {hints}",
-            self.doc.elements.len(),
-            self.doc.diagram.nodes.len(),
-            problems,
-            if problems == 1 { "" } else { "s" },
-        );
-        if let Some((m, _)) = &self.message {
-            status = format!("{m}    {status}");
-        }
-        text.set_clip(Some([0.0, header_top, width - pad, header_bottom]));
-        text.draw(TextStyle::new(fonts.body, status_size, theme.dim.0), [pad, y], &status);
-        y += status_lh;
-        let error = |text: &mut TextRenderer, y: &mut f32, s: &str| {
-            text.draw(TextStyle::new(fonts.body, status_size, theme.error.0), [pad, *y], s);
-            *y += status_lh;
-        };
-        if let Some(e) = &self.doc.load_error {
-            error(text, &mut y, e);
-        }
-        if let Some(e) = &self.config_error {
-            error(text, &mut y, &format!("settings: {e}"));
-        }
-        for d in &self.doc.diagnostics[..shown_diags] {
-            error(text, &mut y, &d.text);
-        }
-        if more_diags {
-            error(text, &mut y, &format!("… and {} more", problems - shown_diags));
-        }
-        text.set_clip(None);
-
-        // ---- panes ----
-        let top = header_bottom;
-        let divider_w = (2.0 * dpi).round().max(1.0);
-        let mut panes = Panes { window: [width, height], ..Default::default() };
-        let mut right = width;
-        if view_cfg.tree {
-            let max = (width * 0.6).max(160.0 * dpi);
-            let tw = (view_cfg.tree_width * dpi).clamp(160.0 * dpi, max).round();
-            panes.tree = Some([width - tw, top, width, height]);
-            panes.tree_divider = Some([width - tw - divider_w, top, width - tw, height]);
-            right = width - tw - divider_w;
-        }
-        panes.split_x = 0.0;
-        panes.split_w = right;
-        let content = [0.0, top, right, height];
-        match self.mode {
-            ViewMode::Outline => panes.code = Some(content),
-            ViewMode::Diagram => panes.diagram = Some(content),
-            ViewMode::Split => {
-                let x = (right * self.split).round();
-                panes.code = Some([0.0, top, x, height]);
-                panes.divider = Some([x, top, x + divider_w, height]);
-                panes.diagram = Some([x + divider_w, top, right, height]);
+        // Ambient glows for the glass cards to pick up.
+        let glass = &theme.glass;
+        for (c, cx, cy, rx, ry) in [(glass.glow, 0.42, 0.22, 0.34, 0.30), (glass.glow_alt, 0.70, 0.88, 0.34, 0.30)] {
+            if c.0[3] > 0.0 {
+                let (x, y, w, h) = (width * cx, height * cy, width * rx, height * ry);
+                let r = [x - w * 0.5, y - h * 0.5, x + w * 0.5, y + h * 0.5];
+                shapes.shadow(r, c.0, (w.min(h)) * 0.5, w.max(h) * 0.6);
             }
         }
-        // The palette toolbar sits on top of the diagram pane.
-        self.edit.toolbar = None;
-        if let Some(d) = panes.diagram {
-            let h = (text.line_metrics(fonts.body, ui_size).line_height * 2.0).round();
-            self.edit.toolbar = Some([d[0], d[1], d[2], d[1] + h]);
-            panes.diagram = Some([d[0], d[1] + h, d[2], d[3]]);
-        }
-        self.panes = panes;
-
-        if let Some(pane) = panes.code {
-            // Diagnostics are for the last parsed text; while a reparse is pending they may lag.
-            let diags: Vec<(usize, usize)> = self.doc.diagnostics.iter().map(|d| (d.span.start, d.span.end)).collect();
-            self.code.draw(shapes, text, fonts, view_cfg.outline_font_size, &theme, pane, dpi, &diags);
-        }
-        if let Some(pane) = panes.diagram {
+        if let Some(pane) = self.panes.diagram {
             self.view.draw(&self.doc.diagram, shapes, text, fonts, &self.config.diagram, &theme, pane, dpi);
         }
         text.set_clip(None);
-        if let Some(bar) = self.edit.toolbar {
-            self.draw_toolbar(shapes, text, fonts, &theme, bar, dpi);
-        }
-        if let Some(pane) = panes.tree {
-            self.tree.draw(&self.doc.tree, shapes, text, fonts, view_cfg.ui_font_size, &theme, pane, dpi);
-        }
-        text.set_clip(None);
-        shapes.begin_layer(Transform::IDENTITY, None);
-        for (d, which) in [(panes.divider, Divider::Split), (panes.tree_divider, Divider::Tree)] {
-            let Some(d) = d else { continue };
-            let active = self.dragging == Some(which) || (self.dragging.is_none() && self.divider_at(self.cursor) == Some(which));
-            shapes.rect(d, if active { theme.selection.0 } else { theme.divider.0 }, 0.0);
-        }
 
-        if view_cfg.show_frame_time {
-            let stats = format!("{:.2} ms/frame", self.frame_ms);
-            let size = 11.0 * dpi;
-            let [w, h] = text.measure(fonts.body, size, &stats, None);
-            let x = panes.tree.map_or(width, |t| t[0]) - w - pad;
-            text.draw(TextStyle::new(fonts.body, size, theme.dim.alpha(0.7)), [x, height - h - pad * 0.6], &stats);
-        }
+        // ---- chrome: cards, floating controls, bars ----
+        shapes.begin_pass(PASS_CHROME);
+        text.begin_pass(PASS_CHROME);
+        self.draw_cards(shapes, text, fonts, &theme, dpi);
+        self.draw_diagram_controls(shapes, text, fonts, &theme, dpi);
+        self.draw_status_bar(shapes, text, fonts, &theme, dpi);
+        let menu_strip = self.draw_top_bar(shapes, text, fonts, &theme, dpi);
 
-        // Diagram editing aids, then the menu bar and popups (overlay pass),
-        // then the shortcuts sheet above them.
+        // Diagram editing aids (the inline field goes to the overlay pass),
+        // then the menus and the shortcuts sheet on top of everything.
         self.draw_edit_overlay(shapes, text, fonts, &theme, dpi);
         shapes.begin_layer(Transform::IDENTITY, None);
-        self.menu.draw(shapes, text, fonts, view_cfg.ui_font_size, &theme, menu_rect, [width, height], dpi);
+        self.menu.draw(shapes, text, fonts, self.config.view.ui_font_size, &theme, menu_strip, [width, height], dpi);
         if self.show_shortcuts {
             self.draw_shortcuts(shapes, text, fonts, &theme, width, height, dpi);
         }
@@ -1498,7 +1433,7 @@ impl Ui {
         shapes: &mut ShapeRenderer,
         text: &mut TextRenderer,
         fonts: Fonts,
-        theme: &crate::config::Theme,
+        theme: &Theme,
         width: f32,
         height: f32,
         dpi: f32,
@@ -1508,24 +1443,27 @@ impl Ui {
         shapes.rect([0.0, 0.0, width, height], theme.node.shadow.alpha(1.5), 0.0);
         let size = self.config.view.ui_font_size * dpi;
         let lh = text.line_metrics(fonts.body, size).line_height;
-        let row = (lh * 1.35).round();
-        let pad = (18.0 * dpi).round();
+        let frame = &theme.size.frame;
+        let row = frame.dialog_row_height.px(dpi, size, lh).round();
+        let pad = (frame.dialog_pad * dpi).round();
         let key_w = SHORTCUTS.iter().map(|(k, _)| text.measure(fonts.title, size, k, None)[0]).fold(0.0, f32::max);
         let what_w = SHORTCUTS.iter().map(|(_, w)| text.measure(fonts.body, size, w, None)[0]).fold(0.0, f32::max);
-        let title_size = size * 1.3;
+        let title_size = size * frame.dialog_title_scale;
         let title_lh = text.line_metrics(fonts.title, title_size).line_height;
         let w = (key_w + what_w + pad * 4.0).min(width - 2.0 * pad);
         let h = (title_lh + pad * 3.0 + row * SHORTCUTS.len() as f32).min(height - 2.0 * pad);
         let x = ((width - w) * 0.5).round();
         let y = ((height - h) * 0.5).round().max(pad);
         let r = [x, y, x + w, y + h];
-        shapes.bordered_rect(r, theme.header.0, theme.divider.0, 8.0 * dpi, dpi.max(1.0));
+        let radius = frame.dialog_radius * dpi;
+        shapes.shadow([r[0], r[1] + 10.0 * dpi, r[2], r[3] + 10.0 * dpi], theme.glass.shadow.0, radius, 30.0 * dpi);
+        shapes.bordered_rect(r, theme.bg.panel.0, theme.glass.border.0, radius, dpi.max(1.0));
         text.set_clip(Some(r));
         text.draw(TextStyle::new(fonts.title, title_size, theme.text.0), [x + pad, y + pad], "Keyboard Shortcuts");
         let mut ry = y + pad * 2.0 + title_lh;
         for (k, what) in SHORTCUTS {
             text.draw(TextStyle::new(fonts.title, size, theme.text.0), [x + pad, ry], k);
-            text.draw(TextStyle::new(fonts.body, size, theme.dim.0), [x + pad * 2.0 + key_w, ry], what);
+            text.draw(TextStyle::new(fonts.body, size, theme.text_muted.0), [x + pad * 2.0 + key_w, ry], what);
             ry += row;
         }
         text.set_clip(None);

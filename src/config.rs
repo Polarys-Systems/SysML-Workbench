@@ -1,4 +1,5 @@
-//! User settings: view options, theme colors and fonts, read from a TOML file.
+//! User settings: view options, theme and fonts, read from a TOML file.
+//! The theme tokens themselves live in `theme.rs`.
 //!
 //! Every field has a default, so a config file only needs the values it changes.
 //! The file is watched and re-applied while the app runs. See `eagleview.toml`.
@@ -6,49 +7,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// sRGB RGBA, 0..1. Written in the file as `"#rrggbb"` or `"#rrggbbaa"`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Color(pub [f32; 4]);
-
-impl Color {
-    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
-        Self([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
-    }
-
-    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0])
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        let hex = s.strip_prefix('#')?;
-        if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
-            return None;
-        }
-        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(|b| b as f32 / 255.0);
-        let alpha = if hex.len() == 8 { byte(6)? } else { 1.0 };
-        Some(Self([byte(0)?, byte(2)?, byte(4)?, alpha]))
-    }
-
-    /// The color with its alpha multiplied by `a`.
-    pub fn alpha(self, a: f32) -> [f32; 4] {
-        let [r, g, b, alpha] = self.0;
-        [r, g, b, alpha * a]
-    }
-
-    /// Linear RGB (for clear colors; shaders convert sRGB themselves).
-    pub fn linear(self) -> [f32; 4] {
-        let f = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
-        let [r, g, b, a] = self.0;
-        [f(r), f(g), f(b), a]
-    }
-}
-
-impl<'de> Deserialize<'de> for Color {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        Color::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("invalid color {s:?}, expected \"#rrggbb\" or \"#rrggbbaa\"")))
-    }
-}
+pub use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -164,7 +123,8 @@ pub struct DiagramConfig {
     pub node_min_width: f32,
     pub node_max_width: f32,
     pub node_padding: f32,
-    pub corner_radius: f32,
+    /// Overrides the theme's node radius (`[theme.size.diagram] node_radius`).
+    pub corner_radius: Option<f32>,
     pub border_width: f32,
     pub edge_thickness: f32,
     pub arrow_size: f32,
@@ -193,7 +153,7 @@ impl Default for DiagramConfig {
             node_min_width: 140.0,
             node_max_width: 340.0,
             node_padding: 10.0,
-            corner_radius: 6.0,
+            corner_radius: None,
             border_width: 1.0,
             edge_thickness: 1.25,
             arrow_size: 9.0,
@@ -207,173 +167,6 @@ impl Default for DiagramConfig {
             max_zoom: 4.0,
             edge_labels: true,
             edges: EdgeVisibility::default(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Theme {
-    /// Diagram canvas.
-    pub background: Color,
-    /// Top bar with the file name and status.
-    pub header: Color,
-    /// Outline pane.
-    pub panel: Color,
-    /// Pane borders and indentation guides.
-    pub divider: Color,
-    pub text: Color,
-    pub dim: Color,
-    pub error: Color,
-    /// Selected node border, highlighted edges and the active divider.
-    pub selection: Color,
-    /// Background of the selected outline row (usually translucent).
-    pub selection_row: Color,
-    /// Background of the outline row under the mouse (usually translucent).
-    pub hover_row: Color,
-    pub grid: Color,
-    /// Code editor: text cursor, selected text, find matches and the cursor's line.
-    pub cursor: Color,
-    pub text_selection: Color,
-    pub find_match: Color,
-    pub current_line: Color,
-    /// Syntax colors of the code editor.
-    pub outline: OutlineColors,
-    pub node: NodeColors,
-    pub edge: EdgeColors,
-}
-
-// Defaults follow GitHub's Primer "dark" palette: neutral surfaces and borders,
-// with color reserved for small text accents so nothing glows.
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            background: Color::rgb(0x0d, 0x11, 0x17),
-            header: Color::rgb(0x01, 0x04, 0x09),
-            panel: Color::rgb(0x0d, 0x11, 0x17),
-            divider: Color::rgb(0x30, 0x36, 0x3d),
-            text: Color::rgb(0xe6, 0xed, 0xf3),
-            dim: Color::rgb(0x8b, 0x94, 0x9e),
-            error: Color::rgb(0xf8, 0x51, 0x49),
-            selection: Color::rgb(0x1f, 0x6f, 0xeb),
-            selection_row: Color([0x38 as f32 / 255.0, 0x8b as f32 / 255.0, 0xfd as f32 / 255.0, 0.15]),
-            hover_row: Color([0xb1 as f32 / 255.0, 0xba as f32 / 255.0, 0xc4 as f32 / 255.0, 0.06]),
-            grid: Color::rgb(0x15, 0x1a, 0x21),
-            cursor: Color::rgb(0x2f, 0x81, 0xf7),
-            text_selection: Color::rgba(0x38, 0x8b, 0xfd, 0x55),
-            find_match: Color::rgba(0xbb, 0x80, 0x09, 0x66),
-            current_line: Color::rgba(0x6e, 0x76, 0x81, 0x1a),
-            outline: OutlineColors::default(),
-            node: NodeColors::default(),
-            edge: EdgeColors::default(),
-        }
-    }
-}
-
-/// Outline text color per element category.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct OutlineColors {
-    pub package: Color,
-    pub import: Color,
-    pub comment: Color,
-    pub definition: Color,
-    pub usage: Color,
-    pub relationship: Color,
-    pub behavior: Color,
-    pub expression: Color,
-    /// Reserved words in the code editor.
-    pub keyword: Color,
-}
-
-impl Default for OutlineColors {
-    fn default() -> Self {
-        Self {
-            keyword: Color::rgb(0xff, 0x7b, 0x72),
-            // GitHub's dark syntax colors.
-            package: Color::rgb(0x79, 0xc0, 0xff),
-            import: Color::rgb(0x8b, 0x94, 0x9e),
-            comment: Color::rgb(0x8b, 0x94, 0x9e),
-            definition: Color::rgb(0xd2, 0xa8, 0xff),
-            usage: Color::rgb(0xe6, 0xed, 0xf3),
-            relationship: Color::rgb(0x7e, 0xe7, 0x87),
-            behavior: Color::rgb(0xff, 0xa6, 0x57),
-            expression: Color::rgb(0xa5, 0xd6, 0xff),
-        }
-    }
-}
-
-/// Diagram nodes are drawn as cards: a header band (kind and name) over a body
-/// listing owned features, with one neutral border. The element kind shows
-/// only in the color of the small `«keyword»` label.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct NodeColors {
-    /// Header band behind the keyword and name.
-    pub header: Color,
-    /// Body behind the feature list.
-    pub fill: Color,
-    pub border: Color,
-    /// Border of the node under the mouse.
-    pub hover_border: Color,
-    pub separator: Color,
-    pub name: Color,
-    pub compartment: Color,
-    /// Drop shadow; set alpha to 00 to turn it off.
-    pub shadow: Color,
-    /// `«keyword»` color per kind of element.
-    pub definition: Color,
-    pub usage: Color,
-    pub behavior: Color,
-    pub requirement: Color,
-}
-
-impl Default for NodeColors {
-    fn default() -> Self {
-        Self {
-            header: Color::rgb(0x16, 0x1b, 0x22),
-            fill: Color::rgb(0x0d, 0x11, 0x17),
-            border: Color::rgb(0x30, 0x36, 0x3d),
-            hover_border: Color::rgb(0x6e, 0x76, 0x81),
-            separator: Color::rgb(0x21, 0x26, 0x2d),
-            name: Color::rgb(0xe6, 0xed, 0xf3),
-            compartment: Color::rgb(0xb1, 0xba, 0xc4),
-            shadow: Color([0x01 as f32 / 255.0, 0x04 as f32 / 255.0, 0x09 as f32 / 255.0, 0.4]),
-            definition: Color::rgb(0xd2, 0x99, 0x22),
-            usage: Color::rgb(0x44, 0x93, 0xf8),
-            behavior: Color::rgb(0xab, 0x7d, 0xf8),
-            requirement: Color::rgb(0x3f, 0xb9, 0x50),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct EdgeColors {
-    pub specialization: Color,
-    pub typing: Color,
-    pub composition: Color,
-    pub satisfy: Color,
-    pub dependency: Color,
-    pub connection: Color,
-    pub flow: Color,
-    pub allocation: Color,
-    pub label: Color,
-}
-
-impl Default for EdgeColors {
-    fn default() -> Self {
-        Self {
-            // Primer accents blended about 60% into the canvas: distinct, not bright.
-            specialization: Color::rgb(0x8b, 0x94, 0x9e),
-            typing: Color::rgb(0x6e, 0x76, 0x81),
-            composition: Color::rgb(0x3a, 0x6a, 0xa2),
-            satisfy: Color::rgb(0x30, 0x87, 0x3f),
-            dependency: Color::rgb(0x6e, 0x4f, 0xa9),
-            connection: Color::rgb(0x8b, 0x94, 0x9e),
-            flow: Color::rgb(0x3a, 0x86, 0x9a),
-            allocation: Color::rgb(0x9a, 0x6a, 0x2e),
-            label: Color::rgb(0x8b, 0x94, 0x9e),
         }
     }
 }

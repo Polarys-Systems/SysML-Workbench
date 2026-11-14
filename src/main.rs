@@ -9,6 +9,7 @@
 //! pane update the diagram as you type; Ctrl+S saves them. `--export-png`
 //! writes the diagram to a PNG file and exits (status 1 if that failed).
 
+mod backdrop;
 mod clipboard;
 mod code_view;
 mod config;
@@ -23,10 +24,12 @@ mod model_edit;
 mod shapes;
 mod source;
 mod text;
+mod theme;
 mod tree_view;
 mod ui;
 
 use gpu::{Attachment, Device, DeviceDesc, Error, RenderDesc};
+use backdrop::Backdrop;
 use shapes::ShapeRenderer;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +49,7 @@ struct Renderer {
     // Field order is drop order: the swapchain waits for the GPU and must go
     // before the resources it used and before the window.
     swapchain: gpu::Swapchain,
+    backdrop: Backdrop,
     shapes: ShapeRenderer,
     text: TextRenderer,
     device: Arc<Device>,
@@ -72,10 +76,12 @@ impl Renderer {
         })?;
         let size = window.inner_size();
         let swapchain = device.create_swapchain(&*window, size.width, size.height)?;
-        let shapes = ShapeRenderer::new(&device, swapchain.format())?;
+        let backdrop = Backdrop::new(&device, swapchain.format(), swapchain.extent())?;
+        let shapes = ShapeRenderer::new(&device, swapchain.format(), &backdrop)?;
         let text = TextRenderer::new(&device, swapchain.format())?;
         Ok(Self {
             swapchain,
+            backdrop,
             shapes,
             text,
             device,
@@ -155,16 +161,34 @@ impl Renderer {
         self.shapes.prepare()?;
         self.text.prepare()?;
         let (cmd, target) = (frame.command, frame.target);
+        if self.backdrop.canvas().extent() != target.extent() {
+            self.backdrop.resize(target.extent())?;
+            self.shapes.set_backdrop(&self.backdrop)?;
+        }
+        // The canvas renders offscreen, so the glass panels can show it blurred.
+        let canvas = self.backdrop.canvas();
         cmd.begin_render(&RenderDesc {
-            area: target.rect(),
-            colors: &[Attachment::clear_color(target, self.ui.clear_color())],
+            area: canvas.rect(),
+            colors: &[Attachment::clear_color(canvas, self.ui.clear_color())],
             ..Default::default()
         })?;
-        // Base pass, then the overlay pass (menus) on top of all base text.
-        self.shapes.record(cmd, target.extent(), false)?;
-        self.text.record(cmd, target.extent(), false)?;
-        self.shapes.record(cmd, target.extent(), true)?;
-        self.text.record(cmd, target.extent(), true)?;
+        self.shapes.record(cmd, canvas.extent(), shapes::PASS_CANVAS)?;
+        self.text.record(cmd, canvas.extent(), shapes::PASS_CANVAS)?;
+        cmd.end_render()?;
+        self.backdrop.record_blur(cmd, self.ui.backdrop_blur(dpi))?;
+
+        // The window: the canvas, then the floating panels, then menus; each
+        // pass covers the shapes and text of the ones before it.
+        cmd.begin_render(&RenderDesc {
+            area: target.rect(),
+            colors: &[Attachment { load: gpu::vk::AttachmentLoadOp::DONT_CARE, ..Attachment::load(target) }],
+            ..Default::default()
+        })?;
+        self.backdrop.record_composite(cmd)?;
+        for pass in shapes::PASS_CHROME..shapes::PASSES {
+            self.shapes.record(cmd, target.extent(), pass)?;
+            self.text.record(cmd, target.extent(), pass)?;
+        }
         cmd.end_render()?;
         match self.swapchain.end_frame() {
             Err(Error::OutOfDate) => self.resize(),

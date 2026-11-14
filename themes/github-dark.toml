@@ -2,14 +2,11 @@
 # Pick it with [view] theme = "github-dark" or the Settings > Theme menu.
 
 [theme]
-background = "#0d1117"    # diagram canvas
-header = "#010409"        # top bar
-panel = "#0d1117"         # outline pane
-divider = "#30363d"
+border = "#30363d"
 text = "#e6edf3"
-dim = "#8b949e"
+text_muted = "#8b949e"
 error = "#f85149"
-selection = "#1f6feb"     # selected node border, highlighted edges
+accent = "#1f6feb"     # selected node border, highlighted edges
 selection_row = "#388bfd26"
 hover_row = "#b1bac40f"
 grid = "#151a21"
@@ -18,7 +15,13 @@ text_selection = "#388bfd55"
 find_match = "#bb800966"
 current_line = "#6e76811a"
 
-[theme.outline]           # GitHub dark syntax colors (code editor)
+[theme.bg]                # surfaces, from the window inwards
+app = "#010409"         # behind the panels
+panel = "#0d1117"       # code editor, model tree
+canvas = "#0d1117"      # diagram
+bar = "#010409"         # menu bar, header, toolbars, popups
+
+[theme.syntax]           # GitHub dark syntax colors (code editor)
 package = "#79c0ff"
 import = "#8b949e"
 comment = "#8b949e"
@@ -38,10 +41,17 @@ separator = "#21262d"
 name = "#e6edf3"
 compartment = "#b1bac4"
 shadow = "#01040966"
-definition = "#d29922"
-usage = "#4493f8"
-behavior = "#ab7df8"
-requirement = "#3fb950"
+
+[theme.kind]              # fg: badge letter, keyword, outline; bg: tinted fill
+package = { fg = "#79c0ff", bg = "#79c0ff24" }
+import = { fg = "#8b949e", bg = "#8b949e24" }
+comment = { fg = "#8b949e", bg = "#8b949e24" }
+definition = { fg = "#d29922", bg = "#d2992224" }
+usage = { fg = "#4493f8", bg = "#4493f824" }
+relationship = { fg = "#7ee787", bg = "#7ee78724" }
+behavior = { fg = "#ab7df8", bg = "#ab7df824" }
+requirement = { fg = "#3fb950", bg = "#3fb95024" }
+expression = { fg = "#a5d6ff", bg = "#a5d6ff24" }
 
 [theme.edge]              # accents blended into the canvas so lines stay quiet
 specialization = "#8b949e"

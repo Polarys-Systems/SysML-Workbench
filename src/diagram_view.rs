@@ -1,7 +1,8 @@
 //! Interactive diagram pane: camera, hit testing, dragging and drawing.
 
-use crate::config::{Color, DiagramConfig, Theme};
-use crate::diagram::{Diagram, EdgeKind, Metrics, Node, NodeStyle, TextRole};
+use crate::config::DiagramConfig;
+use crate::theme::{Color, DiagramSizes, KindPair, Theme};
+use crate::diagram::{Diagram, EdgeKind, Metrics, Node, NodeStyle, PILL_GAP, PILL_PAD, TextRole};
 use crate::shapes::{Rect, ShapeRenderer, Transform};
 use crate::text::{FontId, TextRenderer, TextStyle};
 
@@ -17,16 +18,17 @@ impl Fonts {
     fn for_role(&self, role: TextRole) -> FontId {
         match role {
             TextRole::Name => self.title,
-            TextRole::Keyword | TextRole::Compartment => self.body,
+            TextRole::Keyword => self.body,
+            TextRole::Compartment => self.mono,
         }
     }
 }
 
-fn role_scale(role: TextRole) -> f32 {
+fn role_scale(sizes: &DiagramSizes, role: TextRole) -> f32 {
     match role {
-        TextRole::Keyword => 0.85,
-        TextRole::Name => 1.1,
-        TextRole::Compartment => 0.92,
+        TextRole::Keyword => sizes.keyword_scale,
+        TextRole::Name => sizes.name_scale,
+        TextRole::Compartment => sizes.compartment_scale,
     }
 }
 
@@ -35,15 +37,16 @@ pub struct TextMetrics<'a> {
     pub text: &'a mut TextRenderer,
     pub fonts: Fonts,
     pub font_size: f32,
+    pub sizes: &'a DiagramSizes,
 }
 
 impl Metrics for TextMetrics<'_> {
     fn width(&mut self, role: TextRole, s: &str) -> f32 {
-        self.text.measure(self.fonts.for_role(role), self.font_size * role_scale(role), s, None)[0]
+        self.text.measure(self.fonts.for_role(role), self.font_size * role_scale(self.sizes, role), s, None)[0]
     }
 
     fn line_height(&mut self, role: TextRole) -> f32 {
-        self.text.line_metrics(self.fonts.for_role(role), self.font_size * role_scale(role)).line_height
+        self.text.line_metrics(self.fonts.for_role(role), self.font_size * role_scale(self.sizes, role)).line_height
     }
 }
 
@@ -61,11 +64,14 @@ pub struct DiagramView {
     drag: Option<Drag>,
     /// Fit the diagram to the pane on the next draw.
     pub needs_fit: bool,
+    /// The part of the pane not covered by floating panels (screen pixels):
+    /// fitting and centering aim at it. `None`: the whole pane.
+    pub focus: Option<Rect>,
 }
 
 impl Default for DiagramView {
     fn default() -> Self {
-        Self { zoom: 1.0, pan: [0.0, 0.0], selected: None, hovered: None, drag: None, needs_fit: true }
+        Self { zoom: 1.0, pan: [0.0, 0.0], selected: None, hovered: None, drag: None, needs_fit: true, focus: None }
     }
 }
 
@@ -96,19 +102,28 @@ impl DiagramView {
         self.needs_fit = false;
         let Some(b) = diagram.bounds() else {
             self.zoom = 1.0;
-            self.pan = [(pane[2] - pane[0]) * 0.5, (pane[3] - pane[1]) * 0.5];
+            self.center_on_point([0.0, 0.0], pane, dpi);
             return;
         };
+        let area = self.focus_in(pane);
         let margin = 40.0 * dpi;
-        let (pw, ph) = ((pane[2] - pane[0] - 2.0 * margin).max(1.0), (pane[3] - pane[1] - 2.0 * margin).max(1.0));
+        let (pw, ph) = ((area[2] - area[0] - 2.0 * margin).max(1.0), (area[3] - area[1] - 2.0 * margin).max(1.0));
         let (bw, bh) = ((b[2] - b[0]).max(1.0), (b[3] - b[1]).max(1.0));
         self.zoom = ((pw / bw).min(ph / bh) / dpi).clamp(cfg.min_zoom, cfg.max_zoom.min(1.5));
         self.center_on_point([(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5], pane, dpi);
     }
 
+    /// Where fitting and centering aim: the focus area, or the pane.
+    pub fn focus_in(&self, pane: Rect) -> Rect {
+        self.focus.map(|f| intersect(f, pane)).filter(|f| f[2] > f[0] && f[3] > f[1]).unwrap_or(pane)
+    }
+
+    /// Pans so `world` sits at the center of the focus area.
     pub fn center_on_point(&mut self, world: [f32; 2], pane: Rect, dpi: f32) {
         let s = self.zoom * dpi;
-        self.pan = [(pane[2] - pane[0]) * 0.5 - world[0] * s, (pane[3] - pane[1]) * 0.5 - world[1] * s];
+        let a = self.focus_in(pane);
+        let c = [(a[0] + a[2]) * 0.5 - pane[0], (a[1] + a[3]) * 0.5 - pane[1]];
+        self.pan = [c[0] - world[0] * s, c[1] - world[1] * s];
     }
 
     /// Zooms by `factor`, keeping the diagram point under `screen` fixed.
@@ -203,27 +218,40 @@ impl DiagramView {
             let (a, b) = (&diagram.nodes[e.from], &diagram.nodes[e.to]);
             let color = edge_color(theme, e.kind);
             let highlight = self.selected.is_some_and(|sel| sel == e.from || sel == e.to);
-            let color = if highlight { theme.selection.0 } else { color.0 };
-            draw_edge(shapes, a, b, e.kind, color, cfg);
+            let color = if highlight { theme.accent.0 } else { color.0 };
+            draw_edge(shapes, a, b, e.kind, color, cfg, theme.size.diagram.edge_dash);
         }
 
         let order = (0..diagram.nodes.len()).filter(|&i| Some(i) != self.selected).chain(self.selected);
         let order: Vec<usize> = order.filter(|&i| i < diagram.nodes.len()).collect();
         let metrics_cache: Vec<_> = {
-            let mut m = TextMetrics { text: &mut *text, fonts, font_size: cfg.font_size };
+            let mut m = TextMetrics { text: &mut *text, fonts, font_size: cfg.font_size, sizes: &theme.size.diagram };
             order.iter().map(|&i| Diagram::node_layout(&diagram.nodes[i], cfg, &mut m)).collect()
         };
         let colors = &theme.node;
-        let radius = cfg.corner_radius;
+        let ds = &theme.size.diagram;
+        let radius = cfg.corner_radius.unwrap_or(ds.node_radius);
         for (k, &i) in order.iter().enumerate() {
             let node = &diagram.nodes[i];
+            let layout = &metrics_cache[k];
             let r = node.rect();
+            let selected = Some(i) == self.selected;
             if colors.shadow.0[3] > 0.0 {
-                let o = 2.0;
-                shapes.rect([r[0], r[1] + o, r[2], r[3] + o], colors.shadow.0, radius);
+                let shadow = [r[0], r[1] + ds.shadow_offset, r[2], r[3] + ds.shadow_offset];
+                if ds.shadow_blur > 0.0 {
+                    shapes.shadow(shadow, colors.shadow.0, radius, ds.shadow_blur);
+                } else {
+                    shapes.rect(shadow, colors.shadow.0, radius);
+                }
             }
-            let (border, width) = if Some(i) == self.selected {
-                (theme.selection.0, cfg.border_width * 2.0)
+            // Selection: a soft accent halo around an accent border.
+            if selected && ds.selection_ring > 0.0 {
+                let g = ds.selection_ring;
+                let halo = [r[0] - g, r[1] - g, r[2] + g, r[3] + g];
+                shapes.rect(halo, theme.accent.alpha(ds.selection_ring_alpha), radius + g);
+            }
+            let (border, width) = if selected {
+                (theme.accent.0, cfg.border_width * ds.selected_border_scale)
             } else if Some(i) == self.hovered {
                 (colors.hover_border.0, cfg.border_width)
             } else {
@@ -232,7 +260,7 @@ impl DiagramView {
             // Card: the border and header color fill it all, then the body covers
             // everything below the header (square on top, rounded at the bottom).
             shapes.bordered_rect(r, colors.header.0, border, radius, width);
-            if let Some(sep) = metrics_cache[k].separator_y {
+            if let Some(sep) = layout.separator_y {
                 let inset = width.max(1.0 / s);
                 let top = r[1] + sep;
                 let body = [r[0] + inset, top, r[2] - inset, r[3] - inset];
@@ -242,11 +270,16 @@ impl DiagramView {
                     shapes.line([body[0], top], [body[2], top], colors.separator.0, 1.0 / s, 0.0);
                 }
             }
+            // Kind pill, right-aligned in the header row.
+            let pill_w = node.title_widths[0] + 2.0 * PILL_PAD[0];
+            let px = (r[2] - cfg.node_padding - pill_w).max(r[0] + cfg.node_padding);
+            let pill = [px, r[1] + layout.pill_y, (px + pill_w).min(r[2] - cfg.node_padding), r[1] + layout.pill_y + layout.pill_h];
+            shapes.rect(pill, kind_colors(theme, node.style).bg.0, layout.pill_h * 0.5);
         }
 
         // Text: drawn after every shape, clipped to the pane and its node.
         let to_screen = |p: [f32; 2]| [p[0] * s + t.offset[0], p[1] * s + t.offset[1]];
-        let size = |role| cfg.font_size * role_scale(role) * s;
+        let size = |role| cfg.font_size * role_scale(&theme.size.diagram, role) * s;
         if size(TextRole::Compartment) < 3.0 {
             return;
         }
@@ -256,26 +289,33 @@ impl DiagramView {
             let r = node.rect();
             let [x0, y0] = to_screen([r[0], r[1]]);
             let [x1, y1] = to_screen([r[2], r[3]]);
-            let inset = cfg.node_padding * 0.5 * s;
-            text.set_clip(Some(intersect(pane, [x0 + inset, y0, x1 - inset, y1])));
-            let center = |w: f32| r[0] + (node.size[0] - w).max(cfg.node_padding * 2.0) * 0.5;
-            let kw = to_screen([center(node.title_widths[0]), r[1] + layout.keyword_y]);
-            let accent = keyword_color(theme, node.style);
-            text.draw(TextStyle::new(fonts.body, size(TextRole::Keyword), accent), kw, &node.keyword);
-            let nm = to_screen([center(node.title_widths[1]), r[1] + layout.name_y]);
+            let pad = cfg.node_padding;
+            let pill_w = node.title_widths[0] + 2.0 * PILL_PAD[0];
+            let px = (r[2] - pad - pill_w).max(r[0] + pad);
+            // Name, left-aligned, stopping before the pill.
+            text.set_clip(Some(intersect(pane, [x0 + pad * 0.5 * s, y0, to_screen([px - PILL_GAP * 0.5, 0.0])[0], y1])));
+            let nm = to_screen([r[0] + pad, r[1] + layout.name_y]);
             text.draw(TextStyle::new(fonts.title, size(TextRole::Name), theme.node.name.0), nm, &node.name);
+            // Kind label, centered in its pill.
+            let kw_h = layout.pill_h - 2.0 * PILL_PAD[1];
+            text.set_clip(Some(intersect(pane, [x0, y0, x1 - pad * 0.5 * s, y1])));
+            let kw = to_screen([px + PILL_PAD[0], r[1] + layout.pill_y + (layout.pill_h - kw_h) * 0.5]);
+            let fg = kind_colors(theme, node.style).fg.0;
+            text.draw(TextStyle::new(fonts.body, size(TextRole::Keyword), fg), kw, node.kind_label());
+            // Compartments.
+            text.set_clip(Some(intersect(pane, [x0 + pad * 0.5 * s, y0, x1 - pad * 0.5 * s, y1])));
             let (lines, more) = Diagram::visible_lines(node, cfg);
-            let style = TextStyle::new(fonts.body, size(TextRole::Compartment), theme.node.compartment.0);
+            let style = TextStyle::new(fonts.mono, size(TextRole::Compartment), theme.node.compartment.0);
             let mut y = r[1] + layout.first_line_y;
             for line in lines.iter().map(String::as_str).chain(more.then_some("…")) {
-                text.draw(style, to_screen([r[0] + cfg.node_padding, y]), line);
+                text.draw(style, to_screen([r[0] + pad, y]), line);
                 y += layout.line_height;
             }
         }
 
         if cfg.edge_labels {
             text.set_clip(Some(pane));
-            let style = TextStyle::new(fonts.body, cfg.font_size * 0.8 * s, theme.edge.label.0);
+            let style = TextStyle::new(fonts.body, cfg.font_size * theme.size.diagram.label_scale * s, theme.edge.label.0);
             for e in diagram.edges.iter().filter(|e| e.kind.visible(&cfg.edges)) {
                 let Some(label) = &e.label else { continue };
                 let (a, b) = (&diagram.nodes[e.from], &diagram.nodes[e.to]);
@@ -302,10 +342,25 @@ impl DiagramView {
         let [x0, y0] = self.to_world([pane[0], pane[1]], pane, dpi);
         let [x1, y1] = self.to_world([pane[2], pane[3]], pane, dpi);
         let mut step = cfg.grid_spacing;
-        while step * s < 14.0 {
+        while step * s < theme.size.diagram.grid_min_spacing {
             step *= 2.0;
         }
         let color = theme.grid.0;
+        let dot = theme.size.diagram.grid_dot * dpi;
+        if dot > 0.0 {
+            // Dots at the grid crossings, a fixed size on screen.
+            let r = dot / s;
+            let mut y = (y0 / step).floor() * step;
+            while y <= y1 {
+                let mut x = (x0 / step).floor() * step;
+                while x <= x1 {
+                    shapes.rect([x - r, y - r, x + r, y + r], color, r);
+                    x += step;
+                }
+                y += step;
+            }
+            return;
+        }
         let mut x = (x0 / step).floor() * step;
         while x <= x1 {
             shapes.line([x, y0], [x, y1], color, 1.0 / s, 0.0);
@@ -319,15 +374,14 @@ impl DiagramView {
     }
 }
 
-fn keyword_color(theme: &Theme, style: NodeStyle) -> [f32; 4] {
-    let n = &theme.node;
+fn kind_colors(theme: &Theme, style: NodeStyle) -> KindPair {
+    let k = &theme.kind;
     match style {
-        NodeStyle::Definition => n.definition,
-        NodeStyle::Usage => n.usage,
-        NodeStyle::Behavior => n.behavior,
-        NodeStyle::Requirement => n.requirement,
+        NodeStyle::Definition => k.definition,
+        NodeStyle::Usage => k.usage,
+        NodeStyle::Behavior => k.behavior,
+        NodeStyle::Requirement => k.requirement,
     }
-    .0
 }
 
 fn edge_color(theme: &Theme, kind: EdgeKind) -> Color {
@@ -365,7 +419,7 @@ fn endpoints(a: &Node, b: &Node) -> Option<([f32; 2], [f32; 2])> {
     (forward > 1.0).then_some((pa, pb))
 }
 
-fn draw_edge(shapes: &mut ShapeRenderer, a: &Node, b: &Node, kind: EdgeKind, color: [f32; 4], cfg: &DiagramConfig) {
+fn draw_edge(shapes: &mut ShapeRenderer, a: &Node, b: &Node, kind: EdgeKind, color: [f32; 4], cfg: &DiagramConfig, dash: f32) {
     let Some((pa, pb)) = endpoints(a, b) else { return };
     let len = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt();
     let dir = [(pb[0] - pa[0]) / len, (pb[1] - pa[1]) / len];
@@ -414,7 +468,7 @@ fn draw_edge(shapes: &mut ShapeRenderer, a: &Node, b: &Node, kind: EdgeKind, col
             shapes.line(pb, at(pb, -size, -size * 0.5), color, th * 2.2, 0.0);
         }
         EdgeKind::Typing | EdgeKind::Satisfy | EdgeKind::Dependency | EdgeKind::Allocation => {
-            shapes.line(pa, pb, color, th, 6.0);
+            shapes.line(pa, pb, color, th, dash);
             open_arrow(shapes);
         }
     }
