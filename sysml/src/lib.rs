@@ -29,11 +29,13 @@
 
 pub mod ast;
 mod display;
+pub mod eval;
 pub mod index;
 pub mod lexer;
 mod parser;
 pub mod span;
 mod summary;
+pub mod units;
 
 pub use ast::*;
 pub use summary::Category;

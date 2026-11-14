@@ -138,4 +138,5 @@ package DroneSystem {
     dependency from Drone to Units;
 
     comment about Drone, Deliver /* Review before release. */
+    dependency from weight to MassLimit;
 }

@@ -5,6 +5,7 @@
 
 use super::{Divider, Panes, Ui};
 use crate::config::ViewMode;
+use crate::document::Tone;
 use crate::diagram_view::{Fonts, contains};
 use crate::menu::{Command, Item};
 use crate::shapes::{Rect, ShapeRenderer, Transform};
@@ -293,7 +294,21 @@ impl Ui {
             text.set_clip(None);
             shapes.rect([card[0] + dpi, header[3] - dpi, card[2] - dpi, header[3]], theme.border.0, 0.0);
             let diags: Vec<(usize, usize)> = self.doc.diagnostics.iter().map(|d| (d.span.start, d.span.end)).collect();
-            self.code.draw(shapes, text, fonts, self.config.view.outline_font_size, theme, pane, dpi, &diags);
+            let notes: Vec<(usize, &str, [f32; 4])> = self
+                .doc
+                .annotations
+                .iter()
+                .map(|a| {
+                    let color = match a.tone {
+                        Tone::Value => theme.text_muted.0,
+                        Tone::Muted => theme.text_muted.alpha(0.55),
+                        Tone::Good => theme.success.0,
+                        Tone::Bad => theme.error.0,
+                    };
+                    (a.offset, a.text.as_str(), color)
+                })
+                .collect();
+            self.code.draw(shapes, text, fonts, self.config.view.outline_font_size, theme, pane, dpi, &diags, &notes);
             text.set_clip(None);
         }
         if let (Some(card), Some(pane)) = (self.chrome.tree_card, self.panes.tree) {

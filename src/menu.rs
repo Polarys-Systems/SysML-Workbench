@@ -51,6 +51,7 @@ pub enum Command {
     ToggleSnap,
     ToggleCompartments,
     ToggleEdgeLabels,
+    ToggleValues,
     ToggleEdge(EdgeKind),
     ResetLayout,
     Theme(usize),

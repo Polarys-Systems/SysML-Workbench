@@ -6,9 +6,11 @@
 //! `<model>.layout.toml` that stores nodes the user moved.
 
 use crate::config::{DiagramConfig, EdgeVisibility};
+use crate::document::Tone;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use sysml::eval::{Report, Status, Verdict};
 use sysml::{ConnectorKind, EntryId, Index, Member, MemberKind, Model, Role, Span, UsageKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +48,10 @@ pub struct Node {
     /// From the last measure, relative to `pos`: name top, name height,
     /// first compartment line top, compartment line height.
     pub rows: [f32; 4],
+    /// Computed values and requirement verdicts, shown under the compartment lines.
+    pub values: Vec<(String, Tone)>,
+    /// For a requirement: the worst verdict of the `satisfy` relationships checking it.
+    pub verdict: Option<Verdict>,
 }
 
 impl Node {
@@ -103,6 +109,8 @@ pub struct Edge {
     pub to: usize,
     pub kind: EdgeKind,
     pub label: Option<String>,
+    /// For `satisfy`: whether the subject meets the requirement.
+    pub verdict: Option<Verdict>,
 }
 
 /// Text roles whose size the layout needs.
@@ -136,6 +144,8 @@ pub struct NodeLayout {
     pub separator_y: Option<f32>,
     pub first_line_y: f32,
     pub line_height: f32,
+    /// Top of the first value line (below the compartment lines).
+    pub values_y: f32,
 }
 
 #[derive(Default)]
@@ -202,6 +212,8 @@ impl Diagram {
                 is_def,
                 kind,
                 rows: [0.0; 4],
+                values: Vec::new(),
+                verdict: None,
             });
         }
 
@@ -216,7 +228,7 @@ impl Diagram {
         let mut seen = HashSet::new();
         let mut add = |d: &mut Diagram, from: usize, to: usize, kind: EdgeKind, label: Option<String>| {
             if from != to && seen.insert((from, to, kind, label.clone())) {
-                d.edges.push(Edge { from, to, kind, label });
+                d.edges.push(Edge { from, to, kind, label, verdict: None });
             }
         };
 
@@ -316,7 +328,48 @@ impl Diagram {
         d
     }
 
+    /// Shows computed values in instance nodes, and verdicts on requirements
+    /// and their `satisfy` edges.
+    pub fn apply_report(&mut self, report: &Report) {
+        for inst in &report.instances {
+            let Some(i) = self.node_named(&inst.qualified_name) else { continue };
+            self.nodes[i].values = inst
+                .values
+                .iter()
+                .map(|v| {
+                    let tone = match v.status {
+                        Status::Ok => Tone::Value,
+                        Status::Unknown => Tone::Muted,
+                        Status::Error => Tone::Bad,
+                    };
+                    (format!("{} = {}", v.name, v.text), tone)
+                })
+                .collect();
+        }
+        for c in &report.checks {
+            let (Some(req), Some(by)) = (self.node_for(&c.requirement), self.node_for(&c.subject)) else { continue };
+            let subject = c.subject.rsplit("::").next().unwrap_or(&c.subject);
+            let (word, tone) = match c.verdict {
+                Verdict::Satisfied => ("satisfied", Tone::Good),
+                Verdict::Violated => ("VIOLATED", Tone::Bad),
+                Verdict::Unknown => ("undecided", Tone::Muted),
+                Verdict::Error => ("cannot check", Tone::Bad),
+            };
+            let node = &mut self.nodes[req];
+            node.verdict = Some(node.verdict.map_or(c.verdict, |v| worse(v, c.verdict)));
+            node.values.push((format!("{word} by {subject}"), tone));
+            for e in self.edges.iter_mut().filter(|e| e.kind == EdgeKind::Satisfy && e.from == by && e.to == req) {
+                e.verdict = Some(e.verdict.map_or(c.verdict, |v| worse(v, c.verdict)));
+            }
+        }
+    }
+
     // ---- measuring and layout ----------------------------------------------
+
+    /// The value lines a node shows.
+    pub fn visible_values<'a>(node: &'a Node, cfg: &DiagramConfig) -> &'a [(String, Tone)] {
+        if cfg.values { &node.values } else { &[] }
+    }
 
     pub fn node_layout(node: &Node, cfg: &DiagramConfig, metrics: &mut dyn Metrics) -> NodeLayout {
         let pad = cfg.node_padding;
@@ -324,14 +377,19 @@ impl Diagram {
         let pill_h = metrics.line_height(TextRole::Keyword) + 2.0 * PILL_PAD[1];
         let header_h = name_h.max(pill_h);
         let header_bottom = pad + header_h;
-        let shown = cfg.compartments && !node.lines.is_empty();
+        let (lines, more) = Self::visible_lines(node, cfg);
+        let line_rows = lines.len() + usize::from(more);
+        let shown = line_rows > 0 || !Self::visible_values(node, cfg).is_empty();
+        let first_line_y = if shown { header_bottom + pad * 1.3 } else { header_bottom };
+        let line_height = metrics.line_height(TextRole::Compartment);
         NodeLayout {
             pill_y: pad + (header_h - pill_h) * 0.5,
             pill_h,
             name_y: pad + (header_h - name_h) * 0.5,
             separator_y: shown.then_some(header_bottom + pad * 0.7),
-            first_line_y: if shown { header_bottom + pad * 1.3 } else { header_bottom },
-            line_height: metrics.line_height(TextRole::Compartment),
+            first_line_y,
+            line_height,
+            values_y: first_line_y + line_rows as f32 * line_height + if line_rows > 0 { pad } else { 0.0 },
         }
     }
 
@@ -366,14 +424,19 @@ impl Diagram {
             node.title_widths =
                 [metrics.width(TextRole::Keyword, node.kind_label()), metrics.width(TextRole::Name, &node.name)];
             let (lines, more) = Self::visible_lines(node, cfg);
+            let values = Self::visible_values(node, cfg);
             // Header: name, gap, pill.
             let mut width = node.title_widths[1] + PILL_GAP + node.title_widths[0] + 2.0 * PILL_PAD[0];
-            for line in lines {
+            for line in lines.iter().chain(values.iter().map(|(v, _)| v)) {
                 width = width.max(metrics.width(TextRole::Compartment, line));
             }
-            let rows = lines.len() + usize::from(more);
+            let rows_end = if values.is_empty() {
+                layout.first_line_y + (lines.len() + usize::from(more)) as f32 * layout.line_height
+            } else {
+                layout.values_y + values.len() as f32 * layout.line_height
+            };
             let height = if layout.separator_y.is_some() {
-                layout.first_line_y + rows as f32 * layout.line_height + cfg.node_padding * 0.8
+                rows_end + cfg.node_padding * 0.8
             } else {
                 layout.first_line_y + cfg.node_padding
             };
@@ -493,6 +556,17 @@ impl Diagram {
     pub fn bounds(&self) -> Option<[f32; 4]> {
         self.nodes.iter().map(Node::rect).reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])])
     }
+}
+
+/// The verdict to show when several checks meet.
+fn worse(a: Verdict, b: Verdict) -> Verdict {
+    let rank = |v| match v {
+        Verdict::Satisfied => 0,
+        Verdict::Unknown => 1,
+        Verdict::Error => 2,
+        Verdict::Violated => 3,
+    };
+    if rank(b) > rank(a) { b } else { a }
 }
 
 #[derive(Serialize, Deserialize)]

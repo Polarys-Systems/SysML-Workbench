@@ -141,6 +141,8 @@ pub struct DiagramConfig {
     pub max_zoom: f32,
     /// Labels on composition edges (part name and multiplicity).
     pub edge_labels: bool,
+    /// Computed attribute values and requirement verdicts inside nodes.
+    pub values: bool,
     pub edges: EdgeVisibility,
 }
 
@@ -166,6 +168,7 @@ impl Default for DiagramConfig {
             min_zoom: 0.1,
             max_zoom: 4.0,
             edge_labels: true,
+            values: true,
             edges: EdgeVisibility::default(),
         }
     }

@@ -2,6 +2,8 @@
 
 use crate::config::DiagramConfig;
 use crate::theme::{Color, DiagramSizes, KindPair, Theme};
+use crate::document::Tone;
+use sysml::eval::Verdict;
 use crate::diagram::{Diagram, EdgeKind, Metrics, Node, NodeStyle, PILL_GAP, PILL_PAD, TextRole};
 use crate::shapes::{Rect, ShapeRenderer, Transform};
 use crate::text::{FontId, TextRenderer, TextStyle};
@@ -216,7 +218,11 @@ impl DiagramView {
 
         for e in diagram.edges.iter().filter(|e| e.kind.visible(&cfg.edges)) {
             let (a, b) = (&diagram.nodes[e.from], &diagram.nodes[e.to]);
-            let color = edge_color(theme, e.kind);
+            let color = match e.verdict {
+                Some(Verdict::Satisfied) => theme.success,
+                Some(Verdict::Violated | Verdict::Error) => theme.error,
+                _ => edge_color(theme, e.kind),
+            };
             let highlight = self.selected.is_some_and(|sel| sel == e.from || sel == e.to);
             let color = if highlight { theme.accent.0 } else { color.0 };
             draw_edge(shapes, a, b, e.kind, color, cfg, theme.size.diagram.edge_dash);
@@ -255,7 +261,11 @@ impl DiagramView {
             } else if Some(i) == self.hovered {
                 (colors.hover_border.0, cfg.border_width)
             } else {
-                (colors.border.0, cfg.border_width)
+                match node.verdict {
+                    Some(Verdict::Satisfied) => (theme.success.0, cfg.border_width * ds.selected_border_scale),
+                    Some(Verdict::Violated | Verdict::Error) => (theme.error.0, cfg.border_width * ds.selected_border_scale),
+                    _ => (colors.border.0, cfg.border_width),
+                }
             };
             // Card: the border and header color fill it all, then the body covers
             // everything below the header (square on top, rounded at the bottom).
@@ -268,6 +278,12 @@ impl DiagramView {
                     shapes.rect(body, colors.fill.0, (radius - inset).max(0.0));
                     shapes.rect([body[0], top, body[2], (top + radius).min(body[3])], colors.fill.0, 0.0);
                     shapes.line([body[0], top], [body[2], top], colors.separator.0, 1.0 / s, 0.0);
+                    // A second rule between the feature list and the computed values.
+                    let (lines, more) = Diagram::visible_lines(node, cfg);
+                    if (!lines.is_empty() || more) && !Diagram::visible_values(node, cfg).is_empty() {
+                        let y = r[1] + layout.values_y - cfg.node_padding * 0.5;
+                        shapes.line([body[0] + cfg.node_padding, y], [body[2] - cfg.node_padding, y], colors.separator.0, 1.0 / s, 0.0);
+                    }
                 }
             }
             // Kind pill, right-aligned in the header row.
@@ -309,6 +325,17 @@ impl DiagramView {
             let mut y = r[1] + layout.first_line_y;
             for line in lines.iter().map(String::as_str).chain(more.then_some("…")) {
                 text.draw(style, to_screen([r[0] + pad, y]), line);
+                y += layout.line_height;
+            }
+            let mut y = r[1] + layout.values_y;
+            for (value, tone) in Diagram::visible_values(node, cfg) {
+                let color = match tone {
+                    Tone::Value => theme.node.name.0,
+                    Tone::Muted => theme.text_muted.0,
+                    Tone::Good => theme.success.0,
+                    Tone::Bad => theme.error.0,
+                };
+                text.draw(TextStyle::new(fonts.mono, size(TextRole::Compartment), color), to_screen([r[0] + pad, y]), value);
                 y += layout.line_height;
             }
         }

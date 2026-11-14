@@ -4,7 +4,8 @@
 use crate::diagram::Diagram;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use sysml::{Category, LineIndex, Member, Span};
+use sysml::eval::{Status, Verdict};
+use sysml::{Category, Index, LineIndex, Member, Span};
 
 /// A model element and where it is written.
 pub struct Element {
@@ -19,6 +20,24 @@ pub struct Diagnostic {
     pub text: String,
 }
 
+/// How an annotation reads: a plain value, something missing, good or bad news.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Value,
+    Muted,
+    Good,
+    Bad,
+}
+
+/// Text shown after the end of a source line: a computed value or a
+/// requirement verdict.
+pub struct Annotation {
+    /// Shown on the line holding this offset.
+    pub offset: usize,
+    pub text: String,
+    pub tone: Tone,
+}
+
 pub struct Document {
     pub path: PathBuf,
     /// The text as last loaded or saved (`\n` line breaks).
@@ -28,6 +47,8 @@ pub struct Document {
     /// In source order (owners before their members).
     pub elements: Vec<Element>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Computed values and requirement verdicts, in source order.
+    pub annotations: Vec<Annotation>,
     /// The containment tree in source order, one row per element
     /// (`tree[i]` describes `elements[i]`).
     pub tree: Vec<TreeRow>,
@@ -53,6 +74,7 @@ impl Document {
             crlf: false,
             elements: Vec::new(),
             diagnostics: Vec::new(),
+            annotations: Vec::new(),
             tree: Vec::new(),
             untitled: false,
             load_error: None,
@@ -78,16 +100,20 @@ impl Document {
         self.tree.clear();
         let mut path = Vec::new();
         collect(&result.model.members, &mut path, "", &mut self.elements, &mut self.tree);
-        let index = LineIndex::new(src);
-        self.diagnostics = result
-            .diagnostics
-            .iter()
+        let report = sysml::eval::evaluate(&result.model, &Index::build(&result.model));
+        let lines = LineIndex::new(src);
+        let mut diagnostics: Vec<&sysml::Diagnostic> = result.diagnostics.iter().chain(&report.diagnostics).collect();
+        diagnostics.sort_by_key(|d| d.span.start);
+        self.diagnostics = diagnostics
+            .into_iter()
             .map(|d| {
-                let (line, col) = index.line_col(d.span.start);
+                let (line, col) = lines.line_col(d.span.start);
                 Diagnostic { span: d.span, text: format!("{line}:{col}: {}", d.message) }
             })
             .collect();
+        self.annotations = annotations(&report);
         self.diagram = Diagram::build(&result.model);
+        self.diagram.apply_report(&report);
         if !self.untitled {
             self.diagram.load_positions(&Diagram::layout_path(&self.path));
         }
@@ -191,6 +217,30 @@ fn collect<'a>(members: &'a [Member], path: &mut Vec<&'a str>, parent_key: &str,
         collect(body, path, &key, out, tree);
         path.pop();
     }
+}
+
+/// Values next to the expressions that compute them, verdicts next to `satisfy`.
+fn annotations(report: &sysml::eval::Report) -> Vec<Annotation> {
+    let notes = report.notes.iter().map(|n| {
+        let (text, tone) = match n.status {
+            Status::Ok => (format!("= {}", n.text), Tone::Value),
+            Status::Unknown => (format!("= {}", n.text), Tone::Muted),
+            Status::Error => (format!("! {}", n.text), Tone::Bad),
+        };
+        Annotation { offset: n.span.end, text, tone }
+    });
+    let checks = report.checks.iter().map(|c| {
+        let (word, tone) = match c.verdict {
+            Verdict::Satisfied => ("satisfied", Tone::Good),
+            Verdict::Violated => ("VIOLATED", Tone::Bad),
+            Verdict::Unknown => ("undecided", Tone::Muted),
+            Verdict::Error => ("cannot check", Tone::Bad),
+        };
+        Annotation { offset: c.span.end, text: format!("{word}: {}", c.detail), tone }
+    });
+    let mut out: Vec<Annotation> = notes.chain(checks).collect();
+    out.sort_by_key(|a| a.offset);
+    out
 }
 
 /// `part engine : Engine [1]` → (`part`, `engine : Engine [1]`).

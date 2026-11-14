@@ -719,6 +719,7 @@ impl Ui {
             Item::check("Snap to Grid", "", Command::ToggleSnap, d.snap),
             Item::check("Compartments", "C", Command::ToggleCompartments, d.compartments),
             Item::check("Edge Labels", "", Command::ToggleEdgeLabels, d.edge_labels),
+            Item::check("Computed Values", "", Command::ToggleValues, d.values),
             Item::submenu("Relationships Shown", edges),
             Item::separator(),
             Item::action("Restore Automatic Layout", "L", Command::ResetLayout),
@@ -933,6 +934,11 @@ impl Ui {
             Command::ToggleEdgeLabels => {
                 self.config.diagram.edge_labels = !self.config.diagram.edge_labels;
                 self.persist_bool("diagram", "edge_labels", self.config.diagram.edge_labels);
+            }
+            Command::ToggleValues => {
+                self.config.diagram.values = !self.config.diagram.values;
+                self.needs_measure = true;
+                self.persist_bool("diagram", "values", self.config.diagram.values);
             }
             Command::ToggleEdge(kind) => {
                 let e = &mut self.config.diagram.edges;

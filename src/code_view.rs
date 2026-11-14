@@ -647,6 +647,7 @@ impl CodeView {
         pane: Rect,
         dpi: f32,
         diagnostics: &[(usize, usize)],
+        annotations: &[(usize, &str, [f32; 4])],
     ) {
         if self.find.open {
             self.refresh_matches();
@@ -847,6 +848,22 @@ impl CodeView {
                 hi += 1;
             }
             draw(text, pos, le, theme.text.0);
+        }
+
+        // Annotations after the line end: computed values, requirement verdicts.
+        // They come sorted, so several on one line follow each other.
+        let mut at: Option<(usize, f32)> = None;
+        for &(offset, note, color) in annotations {
+            let l = ed.line_of(floor_boundary(ed.text(), offset.min(len)));
+            if l < first || l >= last {
+                continue;
+            }
+            let x = match at {
+                Some((line, x)) if line == l => x,
+                _ => col_x(ed.line_end(l)) + adv * 2.0,
+            };
+            text.draw(TextStyle::new(fonts.mono, size, color), [x, line_y(l)], note);
+            at = Some((l, x + (note.chars().count() as f32 + 2.0) * adv));
         }
 
         // Line numbers.

@@ -8,7 +8,7 @@ mode = "split"            # "split", "diagram" or "code" (Ctrl+Tab cycles at run
 theme = "github-dark"     # a preset in themes/: "github-dark", "github-light", "nord", ...
 split = 0.35              # code editor width in split mode (drag the divider to change)
 tree = true               # model tree panel on the right (Ctrl+B toggles)
-tree_width = 300          # model tree width (drag its divider to change)
+tree_width = 322          # model tree width (drag its divider to change)
 outline_font_size = 14    # code editor (Ctrl+= / Ctrl+- / Ctrl+0)
 ui_font_size = 13         # menu bar, menus and model tree
 title_font_size = 20
@@ -36,6 +36,7 @@ zoom_speed = 1.15
 min_zoom = 0.1
 max_zoom = 4.0
 edge_labels = true
+values = true             # computed attribute values and requirement verdicts in nodes
 
 [diagram.edges]           # which relationships are drawn
 specialization = true
@@ -66,4 +67,4 @@ body = "segoeui.ttf"
 mono = "consola.ttf"
 
 [files]
-recent = ['C:\Users\sasch\Downloads\obsw_startup.sysml', 'C:\devel\SysML-EagleView\sysml\tests\data\drone.sysml'] # recently opened models (File > Open Recent)
+recent = ['C:\devel\SysML-EagleView\sysml\tests\data\drone.sysml', 'C:\Users\sasch\AppData\Local\Temp\claude\6629e4232671a0ce\2a89d8ba-f8b4-45ea-ab04-4c8d89976cba\scratchpad\budget.sysml', 'C:\Users\sasch\Downloads\obsw_startup.sysml'] # recently opened models (File > Open Recent)
