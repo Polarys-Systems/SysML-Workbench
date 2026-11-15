@@ -150,6 +150,15 @@ pub fn run(input: &Input) -> Vec<Finding> {
         }
     }
 
+    for root in crate::actions::candidates(index, in_project).iter().take(MAX_VIEWS) {
+        let Some(id) = index.get(root) else { continue };
+        let flow = crate::actions::build(index, id);
+        if flow.unresolved > 0 {
+            let n = flow.unresolved;
+            out.add(Rule::UnresolvedEnd, root, format!("{n} succession or flow {} name no step of {}", if n == 1 { "end" } else { "ends" }, short(root)));
+        }
+    }
+
     // ---- requirements ----
     for r in input.requirements.rows.iter().filter(|r| !r.is_def) {
         match r.status {

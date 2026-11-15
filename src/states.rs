@@ -39,9 +39,40 @@ const CURVE_STEPS: usize = 18;
 pub enum StateKind {
     /// The state definition or usage shown.
     Root,
+    /// A state, or in an action flow an action.
     State,
     Initial,
     Final,
+    // Action flows only.
+    Fork,
+    Join,
+    Decision,
+    Merge,
+    /// `accept sig : Signal`
+    Accept,
+    /// `send Signal() to x`
+    Send,
+}
+
+impl StateKind {
+    /// Drawn as a fixed-size symbol, without a title.
+    pub fn is_symbol(self) -> bool {
+        matches!(self, StateKind::Initial | StateKind::Final | StateKind::Fork | StateKind::Join | StateKind::Decision | StateKind::Merge)
+    }
+
+    /// Size of a symbol, in diagram units.
+    pub fn symbol_size(self) -> [f32; 2] {
+        match self {
+            StateKind::Fork | StateKind::Join => [8.0, 56.0],
+            StateKind::Decision | StateKind::Merge => [28.0, 28.0],
+            _ => [PSEUDO, PSEUDO],
+        }
+    }
+
+    /// Round (its border is a circle for lines to end on).
+    fn is_round(self) -> bool {
+        matches!(self, StateKind::Initial | StateKind::Final | StateKind::Decision | StateKind::Merge)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -72,7 +103,7 @@ pub struct State {
 
 impl State {
     pub fn is_pseudo(&self) -> bool {
-        matches!(self.kind, StateKind::Initial | StateKind::Final)
+        self.kind.is_symbol()
     }
 
     pub fn center(&self) -> [f32; 2] {
@@ -97,7 +128,15 @@ pub struct Transition {
     /// The routed polyline (after [`StateMachine::layout`]).
     pub points: Vec<[f32; 2]>,
     pub label_rect: Option<Rect>,
+    /// An object flow (`flow from a.x to b.y`) rather than a control flow.
+    pub flow: bool,
     label_size: [f32; 2],
+}
+
+impl Transition {
+    pub fn new(from: usize, to: usize, label: Option<String>, qualified_name: Option<String>, offset: Option<usize>, flow: bool) -> Self {
+        Transition { from, to, label, qualified_name, offset, points: Vec::new(), label_rect: None, flow, label_size: [0.0; 2] }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -179,18 +218,18 @@ pub fn candidates(index: &Index, in_source: impl Fn(EntryId) -> bool) -> Vec<Str
     scored.into_iter().map(|(_, _, q)| q).collect()
 }
 
-fn path_of(r: &Reference) -> Vec<String> {
+pub(crate) fn path_of(r: &Reference) -> Vec<String> {
     r.chain.iter().flat_map(|q| q.segments.iter().map(|s| s.text.clone())).collect()
 }
 
-fn clip(mut s: String) -> String {
+pub(crate) fn clip(mut s: String) -> String {
     if s.chars().count() > LABEL_MAX {
         s = s.chars().take(LABEL_MAX - 1).collect::<String>() + "…";
     }
     s
 }
 
-fn action_text(a: &ActionRef) -> String {
+pub(crate) fn action_text(a: &ActionRef) -> String {
     match a {
         ActionRef::Ref(r) => r.to_string(),
         ActionRef::Inline(m) => match &m.kind {
@@ -207,7 +246,7 @@ fn action_text(a: &ActionRef) -> String {
 }
 
 /// `Launch [ready] / send Ack()`
-fn transition_label(t: &sysml::Transition) -> Option<String> {
+pub(crate) fn transition_label(t: &sysml::Transition) -> Option<String> {
     let mut parts = Vec::new();
     if t.is_else {
         parts.push("else".to_string());
@@ -316,12 +355,13 @@ impl Builder<'_, '_> {
         // Inner states, by name over every layer (redefinitions merge).
         let mut groups: Vec<(String, Vec<EntryId>)> = Vec::new();
         for &l in &layers {
-            for m in index.entry(l).member.kind.body() {
-                let m = unwrap_then(m);
+            for outer in index.entry(l).member.kind.body() {
+                // The index knows `then state s;` by the `then` member.
+                let m = unwrap_then(outer);
                 if state_usage(m).is_none() {
                     continue;
                 }
-                let (Some(name), Some(id)) = (m.kind.effective_name(), index.id_of(m)) else { continue };
+                let (Some(name), Some(id)) = (m.kind.effective_name(), index.id_of(m).or(index.id_of(outer))) else { continue };
                 match groups.iter_mut().find(|(n, _)| n == name) {
                     Some((_, ids)) => ids.push(id),
                     None => groups.push((name.to_string(), vec![id])),
@@ -467,7 +507,7 @@ impl Builder<'_, '_> {
     fn descend(&self, from: usize, path: &[String]) -> Option<usize> {
         let mut at = from;
         for seg in path {
-            at = *self.sm.states[at].children.iter().find(|&&c| self.sm.states[c].kind == StateKind::State && &self.sm.states[c].name == seg)?;
+            at = *self.sm.states[at].children.iter().find(|&&c| !self.sm.states[c].name.is_empty() && &self.sm.states[c].name == seg)?;
         }
         (at != from).then_some(at)
     }
@@ -484,16 +524,7 @@ impl StateMachine {
             };
             let to = b.resolve(p.scope, &p.to);
             match (from, to) {
-                (Some(from), Some(to)) => b.sm.transitions.push(Transition {
-                    from,
-                    to,
-                    label: p.label,
-                    qualified_name: p.qualified_name,
-                    offset: p.offset,
-                    points: Vec::new(),
-                    label_rect: None,
-                    label_size: [0.0; 2],
-                }),
+                (Some(from), Some(to)) => b.sm.transitions.push(Transition::new(from, to, p.label, p.qualified_name, p.offset, false)),
                 _ => b.sm.unresolved += 1,
             }
         }
@@ -588,7 +619,7 @@ impl StateMachine {
     /// Sizes `i` and positions its children relative to it.
     fn measure(&mut self, i: usize, m: &mut dyn Metrics, title_h: f32, line_h: f32, sizes: &mut [[f32; 2]], offsets: &mut [[f32; 2]]) {
         if self.states[i].is_pseudo() {
-            sizes[i] = [PSEUDO, PSEUDO];
+            sizes[i] = self.states[i].kind.symbol_size();
             return;
         }
         let children = self.states[i].children.clone();
@@ -674,36 +705,94 @@ impl StateMachine {
         let pos = |s: usize| children.iter().position(|&c| c == s);
         let mut edges: Vec<(usize, usize)> = Vec::new();
         for t in &self.transitions {
+            // Object flows say what is passed, not what runs first.
             if let (Some(a), Some(b)) = (self.child_holding(owner, t.from), self.child_holding(owner, t.to))
                 && a != b
+                && !t.flow
                 && let (Some(a), Some(b)) = (pos(a), pos(b))
             {
                 edges.push((a, b));
             }
         }
-        let mut rank: Vec<Option<usize>> = vec![None; children.len()];
+        let n = children.len();
         let is = |k: usize, kind: StateKind| self.states[children[k]].kind == kind;
-        let has_initial = (0..children.len()).any(|k| is(k, StateKind::Initial));
-        let seeds: Vec<usize> = (0..children.len()).filter(|&k| is(k, StateKind::Initial)).chain((0..children.len()).filter(|&k| !is(k, StateKind::Initial) && !is(k, StateKind::Final))).collect();
-        for seed in seeds {
-            if rank[seed].is_some() {
+        let has_initial = (0..n).any(|k| is(k, StateKind::Initial));
+        let seeds: Vec<usize> = (0..n).filter(|&k| is(k, StateKind::Initial)).chain((0..n).filter(|&k| !is(k, StateKind::Initial))).collect();
+
+        // Edges that loop back (to a node still being visited, depth first from
+        // the initial state) do not push their target to the right.
+        let mut state = vec![0u8; n]; // 0 new, 1 on the stack, 2 done
+        let mut back = vec![false; edges.len()];
+        for &seed in &seeds {
+            if state[seed] != 0 {
                 continue;
             }
-            let start = if is(seed, StateKind::Initial) || !has_initial { 0 } else { 1 };
-            // Unreached states join the first column after the initial one.
-            rank[seed] = Some(start);
-            let mut queue = VecDeque::from([seed]);
-            while let Some(a) = queue.pop_front() {
-                for &(x, y) in &edges {
-                    if x == a && rank[y].is_none() && !is(y, StateKind::Final) {
-                        rank[y] = Some(rank[a].unwrap_or(0) + 1);
-                        queue.push_back(y);
+            let mut stack: Vec<(usize, usize)> = vec![(seed, 0)];
+            state[seed] = 1;
+            while let Some(&mut (a, ref mut next)) = stack.last_mut() {
+                if let Some(e) = (*next..edges.len()).find(|&e| edges[e].0 == a) {
+                    *next = e + 1;
+                    let b = edges[e].1;
+                    match state[b] {
+                        0 => {
+                            state[b] = 1;
+                            stack.push((b, 0));
+                        }
+                        1 => back[e] = true,
+                        _ => {}
                     }
+                } else {
+                    state[a] = 2;
+                    stack.pop();
                 }
             }
         }
-        let last = rank.iter().flatten().copied().max().map_or(0, |r| r + 1);
-        rank.iter().enumerate().map(|(k, r)| if is(k, StateKind::Final) { last } else { r.unwrap_or(0) }).collect()
+
+        // Longest path over the other edges: a node sits right of everything leading to it.
+        let mut rank = vec![0usize; n];
+        let mut incoming = vec![0usize; n];
+        for (e, &(_, b)) in edges.iter().enumerate() {
+            if !back[e] {
+                incoming[b] += 1;
+            }
+        }
+        // A node nothing leads to (a decision only reached by name, say) does not
+        // push what it leads to rightwards when those are reached anyway.
+        let source = |k: usize| has_initial && incoming[k] == 0 && !is(k, StateKind::Initial);
+        let sources: Vec<usize> = (0..n).filter(|&k| source(k)).collect();
+        for (e, &(a, b)) in edges.iter().enumerate() {
+            if !back[e] && sources.contains(&a) && incoming[b] > 1 {
+                back[e] = true;
+                incoming[b] -= 1;
+            }
+        }
+        // Unreached nodes join the first column after the initial state.
+        for k in 0..n {
+            if incoming[k] == 0 && has_initial && !is(k, StateKind::Initial) {
+                rank[k] = 1;
+            }
+        }
+        let mut queue: VecDeque<usize> = (0..n).filter(|&k| incoming[k] == 0).collect();
+        while let Some(a) = queue.pop_front() {
+            for (e, &(x, y)) in edges.iter().enumerate() {
+                if x != a || back[e] {
+                    continue;
+                }
+                rank[y] = rank[y].max(rank[a] + 1);
+                incoming[y] -= 1;
+                if incoming[y] == 0 {
+                    queue.push_back(y);
+                }
+            }
+        }
+        // Such a node sits just before the first of them.
+        for &s in &sources {
+            if let Some(first) = edges.iter().filter(|e| e.0 == s).map(|e| rank[e.1]).min() {
+                rank[s] = rank[s].max(first.saturating_sub(1)).max(1);
+            }
+        }
+        let last = (0..n).filter(|&k| !is(k, StateKind::Final)).map(|k| rank[k]).max().map_or(0, |r| r + 1);
+        (0..n).map(|k| if is(k, StateKind::Final) { last } else { rank[k] }).collect()
     }
 
     fn place(&mut self, i: usize, at: [f32; 2], sizes: &[[f32; 2]], offsets: &[[f32; 2]]) {
@@ -723,8 +812,8 @@ impl StateMachine {
         if len < 1e-3 {
             return c;
         }
-        if st.is_pseudo() {
-            let r = PSEUDO * 0.5;
+        if st.kind.is_round() {
+            let r = (st.rect[2] - st.rect[0]) * 0.5;
             return [c[0] + d[0] / len * r, c[1] + d[1] / len * r];
         }
         let hw = (st.rect[2] - st.rect[0]) * 0.5;
@@ -733,6 +822,45 @@ impl StateMachine {
         // (a composite state holds the midpoint of a transition to its neighbor).
         let t = (hw / d[0].abs().max(1e-6)).min(hh / d[1].abs().max(1e-6));
         [c[0] + d[0] * t, c[1] + d[1] * t]
+    }
+
+    /// States a line between `from` and `to` must not cross: all but those two,
+    /// what holds them and what they hold.
+    fn obstacles(&self, from: usize, to: usize) -> Vec<Rect> {
+        (1..self.states.len())
+            .filter(|&s| ![from, to].iter().any(|&e| self.is_within(e, s) || self.is_within(s, e)))
+            .map(|s| self.states[s].rect)
+            .collect()
+    }
+
+    /// For a straight line from `p0` to `p2` that would cross another state:
+    /// a route below (or above) everything in the way, with its label point.
+    fn detour(&self, from: usize, to: usize, p0: [f32; 2], p2: [f32; 2]) -> Option<(Vec<[f32; 2]>, [f32; 2])> {
+        let obstacles = self.obstacles(from, to);
+        let inside = |p: [f32; 2], r: &Rect| p[0] > r[0] - 2.0 && p[0] < r[2] + 2.0 && p[1] > r[1] - 2.0 && p[1] < r[3] + 2.0;
+        let steps = 40;
+        let crossed: Vec<&Rect> = obstacles
+            .iter()
+            .filter(|r| (1..steps).any(|i| {
+                let t = i as f32 / steps as f32;
+                inside([p0[0] + (p2[0] - p0[0]) * t, p0[1] + (p2[1] - p0[1]) * t], r)
+            }))
+            .collect();
+        if crossed.is_empty() {
+            return None;
+        }
+        let (a, b) = (self.states[from].rect, self.states[to].rect);
+        let (x0, x1) = ((a[0] + a[2]) * 0.5, (b[0] + b[2]) * 0.5);
+        // Everything between the two ends, horizontally.
+        let span = |r: &&Rect| r[2] > x0.min(x1) && r[0] < x0.max(x1);
+        let between: Vec<&Rect> = obstacles.iter().filter(span).collect();
+        let below = between.iter().map(|r| r[3]).fold(a[3].max(b[3]), f32::max) + 14.0;
+        let above = between.iter().map(|r| r[1]).fold(a[1].min(b[1]), f32::min) - 14.0;
+        let mid_y = (p0[1] + p2[1]) * 0.5;
+        let down = (below - mid_y).abs() <= (mid_y - above).abs();
+        let (y, ya, yb) = if down { (below, a[3], b[3]) } else { (above, a[1], b[1]) };
+        let points = vec![[x0, ya], [x0, y], [x1, y], [x1, yb]];
+        Some((points, [(x0 + x1) * 0.5, y]))
     }
 
     fn route(&mut self, label_h: f32) {
@@ -769,7 +897,10 @@ impl StateMachine {
                 let p0 = self.exit_point(from, want);
                 let p2 = self.exit_point(to, want);
                 if off.abs() < 0.5 {
-                    (vec![p0, p2], [(p0[0] + p2[0]) * 0.5, (p0[1] + p2[1]) * 0.5])
+                    match self.detour(from, to, p0, p2) {
+                        Some(route) => route,
+                        None => (vec![p0, p2], [(p0[0] + p2[0]) * 0.5, (p0[1] + p2[1]) * 0.5]),
+                    }
                 } else {
                     let m = [(p0[0] + p2[0]) * 0.5 + n[0] * off, (p0[1] + p2[1]) * 0.5 + n[1] * off];
                     let q = [(4.0 * m[0] - p0[0] - p2[0]) * 0.5, (4.0 * m[1] - p0[1] - p2[1]) * 0.5];

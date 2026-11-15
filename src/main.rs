@@ -25,6 +25,7 @@ mod ibd_view;
 mod menu;
 mod model_edit;
 mod requirements;
+mod actions;
 mod allocations;
 mod checks;
 mod shapes;

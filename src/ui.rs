@@ -73,7 +73,7 @@ const UI_FONTS: [(&str, &str, &str); 7] = [
 ];
 
 const SHORTCUTS: [(&str, &str); 25] = [
-    ("Ctrl+1 … Ctrl+7", "General, interconnection, states, requirements, traceability, allocation, checks"),
+    ("Ctrl+1 … Ctrl+8", "General, interconnection, states, actions, requirements, traceability, allocation, checks"),
     ("Backspace", "Interconnection: back to the previous element"),
     ("Ctrl+N / Ctrl+O", "New / open a model"),
     ("Ctrl+S / Ctrl+Shift+S", "Save / save as"),
@@ -155,6 +155,7 @@ pub struct Ui {
     canvas: Canvas,
     ibd: IbdView,
     states: StateView,
+    actions: StateView,
     reqs: reqs::ReqState,
     alloc_table: reqs::ReqState,
     check_table: reqs::ReqState,
@@ -201,6 +202,7 @@ impl Ui {
             canvas: config.view.canvas,
             ibd: IbdView::default(),
             states: StateView::default(),
+            actions: StateView::default(),
             reqs: reqs::ReqState::default(),
             alloc_table: reqs::ReqState::default(),
             check_table: reqs::ReqState::default(),
@@ -404,6 +406,7 @@ impl Ui {
         self.view = DiagramView::default();
         self.ibd = IbdView::default();
         self.states = StateView::default();
+        self.actions = StateView::default();
         self.reqs.reset();
         self.alloc_table.reset();
         self.check_table.reset();
@@ -490,9 +493,10 @@ impl Ui {
                 self.ensure_ibd();
                 self.ibd.ibd.is_none()
             }
-            Canvas::States => {
-                self.ensure_states();
-                self.states.machine.is_none()
+            Canvas::States | Canvas::Actions => {
+                let g = if self.canvas == Canvas::States { canvas::Graph::States } else { canvas::Graph::Actions };
+                self.ensure_graph(g);
+                self.graph(g).machine.is_none()
             }
             _ => self.doc.diagram.nodes.is_empty(),
         };
@@ -503,6 +507,7 @@ impl Ui {
         let root = match self.canvas {
             Canvas::Interconnection => self.ibd.current_root(),
             Canvas::States => self.states.current_root(),
+            Canvas::Actions => self.actions.current_root(),
             _ => None,
         };
         let default = match root {
@@ -578,6 +583,7 @@ impl Ui {
         let b = match self.canvas {
             Canvas::Interconnection => self.ibd.ibd.as_ref()?.bounds()?,
             Canvas::States => self.states.machine.as_ref()?.bounds()?,
+            Canvas::Actions => self.actions.machine.as_ref()?.bounds()?,
             _ => self.doc.diagram.bounds()?,
         };
         let (w, h) = (b[2] - b[0] + 2.0 * EXPORT_MARGIN, b[3] - b[1] + 2.0 * EXPORT_MARGIN);
@@ -598,12 +604,14 @@ impl Ui {
             self.ibd.draw(shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
             self.ibd.camera = camera;
             (self.ibd.selected, self.ibd.hovered) = (sel, hov);
-        } else if self.canvas == Canvas::States {
-            let camera = std::mem::replace(&mut self.states.camera, view);
-            let (sel, hov) = (self.states.selected.take(), self.states.hovered.take());
-            self.states.draw(shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
-            self.states.camera = camera;
-            (self.states.selected, self.states.hovered) = (sel, hov);
+        } else if matches!(self.canvas, Canvas::States | Canvas::Actions) {
+            let theme = self.config.theme.clone();
+            let v = if self.canvas == Canvas::States { &mut self.states } else { &mut self.actions };
+            let camera = std::mem::replace(&mut v.camera, view);
+            let (sel, hov) = (v.selected.take(), v.hovered.take());
+            v.draw(shapes, text, fonts, &cfg, &theme, pane, 1.0);
+            v.camera = camera;
+            (v.selected, v.hovered) = (sel, hov);
         } else {
             view.draw(&self.doc.diagram, shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
         }
@@ -819,6 +827,7 @@ impl Ui {
                 match self.canvas {
                     Canvas::Interconnection => "Export Interconnection as PNG…",
                     Canvas::States => "Export State Machine as PNG…",
+                    Canvas::Actions => "Export Action Flow as PNG…",
                     _ => "Export Diagram as PNG…",
                 },
                 if self.canvas.is_diagram() { "Ctrl+E" } else { "" },
@@ -827,6 +836,7 @@ impl Ui {
             .enabled(match self.canvas {
                 Canvas::Interconnection => self.ibd.ibd.is_some(),
                 Canvas::States => self.states.machine.is_some(),
+                Canvas::Actions => self.actions.machine.is_some(),
                 _ => !self.doc.diagram.nodes.is_empty(),
             }),
             Item::action(format!("Export {} as CSV…", self.csv_table().0), if self.canvas.is_diagram() { "" } else { "Ctrl+E" }, Command::ExportCsv)
@@ -891,8 +901,10 @@ impl Ui {
             Item::separator(),
             Item::submenu("Interconnection: Show Element", self.ibd_menu_items()),
             Item::action("Interconnection: Back", "Backspace", Command::IbdBack).enabled(!self.ibd.back.is_empty()),
-            Item::submenu("States: Show Element", self.state_menu_items()),
+            Item::submenu("States: Show Element", self.graph_menu_items(canvas::Graph::States)),
             Item::action("States: Back", "Backspace", Command::StateBack).enabled(!self.states.back.is_empty()),
+            Item::submenu("Actions: Show Element", self.graph_menu_items(canvas::Graph::Actions)),
+            Item::action("Actions: Back", "Backspace", Command::ActionBack).enabled(!self.actions.back.is_empty()),
         ];
 
         let themes: Vec<Item> = config::theme_names(self.config_path.as_deref())
@@ -977,6 +989,7 @@ impl Ui {
         match self.canvas {
             Canvas::Interconnection => &mut self.ibd.camera,
             Canvas::States => &mut self.states.camera,
+            Canvas::Actions => &mut self.actions.camera,
             _ => &mut self.view,
         }
     }
@@ -1216,13 +1229,10 @@ impl Ui {
                 }
             }
             Command::IbdBack => self.ibd_back(),
-            Command::StateRoot(i) => {
-                if let Some(q) = self.states.candidates.get(usize::from(i)).cloned() {
-                    self.set_canvas(Canvas::States);
-                    self.set_state_root(Some(q), true);
-                }
-            }
-            Command::StateBack => self.state_back(),
+            Command::StateRoot(i) => self.run_graph_root(canvas::Graph::States, i),
+            Command::StateBack => self.graph_back(canvas::Graph::States),
+            Command::ActionRoot(i) => self.run_graph_root(canvas::Graph::Actions, i),
+            Command::ActionBack => self.graph_back(canvas::Graph::Actions),
             Command::ExportCsv => self.export_csv(),
             Command::OpenProjectFile(i) => {
                 if let Some(p) = self.doc.project.get(usize::from(i)).map(|f| f.path.clone()) {
@@ -1292,6 +1302,7 @@ impl Ui {
         self.view.hovered = None;
         self.ibd.hovered = None;
         self.states.hovered = None;
+        self.actions.hovered = None;
         self.tree.leave();
     }
 
@@ -1307,6 +1318,7 @@ impl Ui {
             self.code.release();
             self.ibd.camera.release();
             self.states.camera.release();
+            self.actions.camera.release();
             if self.view.release() {
                 self.save_positions();
             }
@@ -1505,10 +1517,11 @@ impl Ui {
                 "1" => Some(Command::Canvas(Canvas::General)),
                 "2" => Some(Command::Canvas(Canvas::Interconnection)),
                 "3" => Some(Command::Canvas(Canvas::States)),
-                "4" => Some(Command::Canvas(Canvas::Requirements)),
-                "5" => Some(Command::Canvas(Canvas::Traceability)),
-                "6" => Some(Command::Canvas(Canvas::Allocation)),
-                "7" => Some(Command::Canvas(Canvas::Checks)),
+                "4" => Some(Command::Canvas(Canvas::Actions)),
+                "5" => Some(Command::Canvas(Canvas::Requirements)),
+                "6" => Some(Command::Canvas(Canvas::Traceability)),
+                "7" => Some(Command::Canvas(Canvas::Allocation)),
+                "8" => Some(Command::Canvas(Canvas::Checks)),
                 _ => None,
             };
             if let Some(cmd) = cmd {
@@ -1618,15 +1631,19 @@ impl Ui {
             }
             self.ibd.needs_layout = true;
             self.states.needs_layout = true;
+            self.actions.needs_layout = true;
         }
         // The interconnection view follows the model (its candidates feed the menus).
         self.ensure_ibd();
         if let (true, Some(fonts)) = (self.ibd.needs_layout, self.fonts) {
             self.ibd.measure(text, fonts, &self.config.diagram, &self.config.theme);
         }
-        self.ensure_states();
-        if let (true, Some(fonts)) = (self.states.needs_layout, self.fonts) {
-            self.states.measure(text, fonts, &self.config.diagram, &self.config.theme);
+        for g in [canvas::Graph::States, canvas::Graph::Actions] {
+            self.ensure_graph(g);
+            if let (true, Some(fonts)) = (self.graph(g).needs_layout, self.fonts) {
+                let (cfg, theme) = (self.config.diagram.clone(), self.config.theme.clone());
+                self.graph_mut(g).measure(text, fonts, &cfg, &theme);
+            }
         }
     }
 
@@ -1672,6 +1689,7 @@ impl Ui {
                 Canvas::General => self.view.draw(&self.doc.diagram, shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
                 Canvas::Interconnection => self.ibd.draw(shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
                 Canvas::States => self.states.draw(shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
+                Canvas::Actions => self.actions.draw(shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
                 _ => {}
             }
         }

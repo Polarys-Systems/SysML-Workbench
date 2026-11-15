@@ -113,6 +113,39 @@ impl StateView {
                     shapes.rect([r[0] + k, r[1] + k, r[2] - k, r[3] - k], c, PSEUDO * 0.5 - k);
                     continue;
                 }
+                StateKind::Fork | StateKind::Join => {
+                    let c = if hot { theme.accent.0 } else if hover { colors.hover_border.0 } else { colors.name.0 };
+                    shapes.rect(r, c, 2.0);
+                    continue;
+                }
+                StateKind::Decision | StateKind::Merge => {
+                    let border = if hot { theme.accent.0 } else if hover { colors.hover_border.0 } else { colors.border.0 };
+                    let (cx, cy, h) = ((r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5, (r[2] - r[0]) * 0.5);
+                    fill_rows(shapes, r[1], r[3], colors.header.0, |y| {
+                        let w = h - (y - cy).abs();
+                        (cx - w, cx + w)
+                    });
+                    let (n, e, so, w) = ([cx, r[1]], [r[2], cy], [cx, r[3]], [r[0], cy]);
+                    for (a, b) in [(n, e), (e, so), (so, w), (w, n)] {
+                        shapes.line(a, b, border, bw.max(1.0) * if hot { 1.8 } else { 1.2 }, 0.0);
+                    }
+                    continue;
+                }
+                StateKind::Accept | StateKind::Send => {
+                    let border = if hot { theme.accent.0 } else if hover { colors.hover_border.0 } else { colors.border.0 };
+                    let pts = signal_shape(st.kind, r);
+                    let (cy, k, x0, x1) = ((r[1] + r[3]) * 0.5, SIGNAL_TIP, r[0], r[2]);
+                    let h = (r[3] - r[1]) * 0.5;
+                    let accept = st.kind == StateKind::Accept;
+                    fill_rows(shapes, r[1], r[3], colors.header.0, |y| {
+                        let f = 1.0 - (y - cy).abs() / h;
+                        if accept { (x0 + k * f, x1) } else { (x0, x1 - k + k * f) }
+                    });
+                    for w in 0..pts.len() {
+                        shapes.line(pts[w], pts[(w + 1) % pts.len()], border, bw.max(1.0) * if hot { 1.8 } else { 1.0 }, 0.0);
+                    }
+                    continue;
+                }
                 _ => {}
             }
             let fill = match st.depth {
@@ -155,11 +188,15 @@ impl StateView {
                 theme.accent.0
             } else if hover {
                 colors.hover_border.0
+            } else if tr.flow {
+                theme.edge.flow.0
             } else {
                 theme.edge.composition.0
             };
+            // Object flows dashed, control flow solid.
+            let dash = if tr.flow { ds.edge_dash.max(5.0) } else { 0.0 };
             for w in tr.points.windows(2) {
-                shapes.line(w[0], w[1], color, th * if hot { 1.6 } else { 1.0 }, 0.0);
+                shapes.line(w[0], w[1], color, th * if hot { 1.6 } else { 1.0 }, dash);
             }
             if let [.., a, b] = tr.points[..] {
                 let d = [b[0] - a[0], b[1] - a[1]];
@@ -237,4 +274,30 @@ impl StateView {
 
 fn intersect(a: Rect, b: Rect) -> Rect {
     [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])]
+}
+
+/// How far the point (send) or notch (accept) of a signal action reaches in.
+const SIGNAL_TIP: f32 = 14.0;
+
+/// Outline of an accept action (notched on the left) or a send action
+/// (pointed on the right).
+fn signal_shape(kind: StateKind, r: Rect) -> Vec<[f32; 2]> {
+    let cy = (r[1] + r[3]) * 0.5;
+    if kind == StateKind::Accept {
+        vec![[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]], [r[0] + SIGNAL_TIP, cy]]
+    } else {
+        vec![[r[0], r[1]], [r[2] - SIGNAL_TIP, r[1]], [r[2], cy], [r[2] - SIGNAL_TIP, r[3]], [r[0], r[3]]]
+    }
+}
+
+/// Fills a shape row by row: `span(y)` gives its left and right edge at `y`.
+fn fill_rows(shapes: &mut ShapeRenderer, y0: f32, y1: f32, color: [f32; 4], span: impl Fn(f32) -> (f32, f32)) {
+    let mut y = y0 + 0.5;
+    while y < y1 {
+        let (a, b) = span(y);
+        if b > a {
+            shapes.rect([a, y - 0.5, b, y + 0.6], color, 0.0);
+        }
+        y += 1.0;
+    }
 }

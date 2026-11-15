@@ -80,6 +80,10 @@ pub enum Command {
     StateRoot(u16),
     /// Back to the element shown before in the state machine view.
     StateBack,
+    /// Show the n-th candidate in the action flow view.
+    ActionRoot(u16),
+    /// Back to the element shown before in the action flow view.
+    ActionBack,
     /// Write the table shown (requirements, allocation matrix, checks) to a CSV file.
     ExportCsv,
     /// Open the n-th other file of the project.

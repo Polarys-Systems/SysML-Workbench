@@ -40,6 +40,8 @@ pub enum Canvas {
     Interconnection,
     /// The states and transitions of one state machine.
     States,
+    /// The steps of one action and the control and object flow between them.
+    Actions,
     /// The requirements table.
     Requirements,
     /// Requirements against what satisfies, verifies or depends on them.
@@ -51,10 +53,11 @@ pub enum Canvas {
 }
 
 impl Canvas {
-    pub const ALL: [Canvas; 7] = [
+    pub const ALL: [Canvas; 8] = [
         Canvas::General,
         Canvas::Interconnection,
         Canvas::States,
+        Canvas::Actions,
         Canvas::Requirements,
         Canvas::Traceability,
         Canvas::Allocation,
@@ -66,6 +69,7 @@ impl Canvas {
             Canvas::General => "General",
             Canvas::Interconnection => "Interconnection",
             Canvas::States => "States",
+            Canvas::Actions => "Actions",
             Canvas::Requirements => "Requirements",
             Canvas::Traceability => "Traceability",
             Canvas::Allocation => "Allocation",
@@ -79,6 +83,7 @@ impl Canvas {
             Canvas::General => "general",
             Canvas::Interconnection => "interconnection",
             Canvas::States => "states",
+            Canvas::Actions => "actions",
             Canvas::Requirements => "requirements",
             Canvas::Traceability => "traceability",
             Canvas::Allocation => "allocation",
@@ -88,7 +93,7 @@ impl Canvas {
 
     /// Diagrams (drawn on the zoomable canvas) rather than tables.
     pub fn is_diagram(self) -> bool {
-        matches!(self, Canvas::General | Canvas::Interconnection | Canvas::States)
+        matches!(self, Canvas::General | Canvas::Interconnection | Canvas::States | Canvas::Actions)
     }
 }
 

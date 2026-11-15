@@ -1,13 +1,15 @@
 //! What the canvas shows (general view, interconnection view, state machine
-//! view, requirements table, traceability and allocation matrices, model
-//! checks): switching between them, building the interconnection and state
-//! machine views on demand and routing input to the active one.
+//! and action flow views, requirements table, traceability and allocation
+//! matrices, model checks): switching between them, building the diagram
+//! views on demand and routing input to the active one.
 
 use super::Ui;
 use crate::config::{self, Canvas};
 use crate::diagram_view::contains;
+use crate::document::Document;
 use crate::ibd::{End, Ibd};
 use crate::menu::{Command, Item};
+use crate::state_view::StateView;
 use crate::states::{Hit, StateMachine};
 use std::time::{Duration, Instant};
 use winit::event::MouseButton;
@@ -15,7 +17,70 @@ use winit::keyboard::{Key, NamedKey};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
 
+/// The two views drawn as a graph of nodes and curved edges.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Graph {
+    States,
+    Actions,
+}
+
+impl Graph {
+    fn of(canvas: Canvas) -> Option<Graph> {
+        match canvas {
+            Canvas::States => Some(Graph::States),
+            Canvas::Actions => Some(Graph::Actions),
+            _ => None,
+        }
+    }
+
+    fn canvas(self) -> Canvas {
+        match self {
+            Graph::States => Canvas::States,
+            Graph::Actions => Canvas::Actions,
+        }
+    }
+
+    fn candidates(self, doc: &Document) -> Vec<String> {
+        let index = doc.index();
+        match self {
+            Graph::States => crate::states::candidates(&index, |id| doc.is_local(&index, id)),
+            Graph::Actions => crate::actions::candidates(&index, |id| doc.is_local(&index, id)),
+        }
+    }
+
+    fn build(self, doc: &Document, root: &str) -> Option<StateMachine> {
+        let index = doc.index();
+        let id = index.get(root)?;
+        Some(match self {
+            Graph::States => StateMachine::build(&index, id),
+            Graph::Actions => crate::actions::build(&index, id),
+        })
+    }
+
+    /// "state" / "action", for messages.
+    fn noun(self) -> &'static str {
+        match self {
+            Graph::States => "state",
+            Graph::Actions => "action",
+        }
+    }
+}
+
 impl Ui {
+    pub(super) fn graph(&self, g: Graph) -> &StateView {
+        match g {
+            Graph::States => &self.states,
+            Graph::Actions => &self.actions,
+        }
+    }
+
+    pub(super) fn graph_mut(&mut self, g: Graph) -> &mut StateView {
+        match g {
+            Graph::States => &mut self.states,
+            Graph::Actions => &mut self.actions,
+        }
+    }
+
     pub(super) fn set_canvas(&mut self, canvas: Canvas) {
         if self.canvas == canvas {
             return;
@@ -26,26 +91,25 @@ impl Ui {
         self.view.hovered = None;
         self.ibd.hovered = None;
         self.states.hovered = None;
+        self.actions.hovered = None;
         self.edit.reset_tools();
-        match canvas {
-            Canvas::Interconnection => {
-                // Start from the element selected before, if it has an inside.
-                if let Some(name) = focus.clone() {
-                    self.ensure_ibd();
-                    if self.ibd.candidates.contains(&name) && self.ibd.current_root() != Some(name.as_str()) {
-                        self.set_ibd_root(Some(name), true);
-                    }
-                }
+        if canvas == Canvas::Interconnection
+            && let Some(name) = focus.clone()
+        {
+            // Start from the element selected before, if it has an inside.
+            self.ensure_ibd();
+            if self.ibd.candidates.contains(&name) && self.ibd.current_root() != Some(name.as_str()) {
+                self.set_ibd_root(Some(name), true);
             }
-            Canvas::States => {
-                if let Some(name) = focus.clone() {
-                    self.ensure_states();
-                    if self.states.candidates.contains(&name) && self.states.current_root() != Some(name.as_str()) {
-                        self.set_state_root(Some(name), true);
-                    }
-                }
+        }
+        if let Some(g) = Graph::of(canvas)
+            && let Some(name) = focus.clone()
+        {
+            self.ensure_graph(g);
+            let v = self.graph(g);
+            if v.candidates.contains(&name) && v.current_root() != Some(name.as_str()) {
+                self.set_graph_root(g, Some(name), true);
             }
-            _ => {}
         }
         if !canvas.is_diagram() {
             let keep = self.table().selected.clone();
@@ -61,8 +125,13 @@ impl Ui {
         match self.canvas {
             Canvas::General => self.selected_name(),
             Canvas::Interconnection => self.ibd.selected.and_then(|e| self.ibd.name_of(e)).map(str::to_owned),
-            Canvas::States => self.states.selected.and_then(|h| self.states.name_of(h)).map(str::to_owned),
-            _ => self.table().selected.clone(),
+            c => match Graph::of(c) {
+                Some(g) => {
+                    let v = self.graph(g);
+                    v.selected.and_then(|h| v.name_of(h)).map(str::to_owned)
+                }
+                None => self.table().selected.clone(),
+            },
         }
     }
 
@@ -74,15 +143,23 @@ impl Ui {
             let found = match self.canvas {
                 Canvas::General => return,
                 Canvas::Interconnection => self.ibd.find(name).map(|e| self.ibd.selected = Some(e)).is_some(),
-                Canvas::States => self.states.find(name).map(|h| self.states.selected = Some(h)).is_some(),
-                _ => {
-                    let hit = self.table_rows().iter().map(|r| r.0).chain(self.table_columns()).any(|q| q == name);
-                    if hit {
-                        let q = name.to_string();
-                        self.table_mut().select(Some(q));
+                c => match Graph::of(c) {
+                    Some(g) => {
+                        let hit = self.graph(g).find(name);
+                        if hit.is_some() {
+                            self.graph_mut(g).selected = hit;
+                        }
+                        hit.is_some()
                     }
-                    hit
-                }
+                    None => {
+                        let hit = self.table_rows().iter().map(|r| r.0).chain(self.table_columns()).any(|q| q == name);
+                        if hit {
+                            let q = name.to_string();
+                            self.table_mut().select(Some(q));
+                        }
+                        hit
+                    }
+                },
             };
             if found {
                 return;
@@ -141,47 +218,62 @@ impl Ui {
         }
     }
 
-    // ---- state machine view --------------------------------------------------------
+    // ---- state machine and action flow views ---------------------------------------
 
-    /// Rebuilds the state machine view when the model or the element shown changed.
-    pub(super) fn ensure_states(&mut self) {
-        let key = (self.doc.generation, self.states.root.clone());
-        if self.states.built.as_ref() == Some(&key) {
+    /// Rebuilds a graph view when the model or the element shown changed.
+    pub(super) fn ensure_graph(&mut self, g: Graph) {
+        let generation = self.doc.generation;
+        if self.graph(g).built.as_ref().is_some_and(|(gen_, r)| *gen_ == generation && *r == self.graph(g).root) {
             return;
         }
-        let index = self.doc.index();
-        self.states.candidates = crate::states::candidates(&index, |id| self.doc.is_local(&index, id));
-        if self.states.root.as_ref().is_some_and(|r| index.get(r).is_none()) {
-            self.states.root = None;
-            self.states.back.clear();
+        let candidates = g.candidates(&self.doc);
+        let doc = &self.doc;
+        let v = match g {
+            Graph::States => &mut self.states,
+            Graph::Actions => &mut self.actions,
+        };
+        v.candidates = candidates;
+        if v.root.as_ref().is_some_and(|r| doc.index().get(r).is_none()) {
+            // Renamed or deleted: fall back to the best candidate.
+            v.root = None;
+            v.back.clear();
         }
-        let selected = self.states.selected.and_then(|h| self.states.name_of(h)).map(str::to_owned);
-        let root_changed = self.states.built.as_ref().is_none_or(|(_, r)| *r != self.states.root);
-        self.states.machine = self.states.current_root().and_then(|r| index.get(r)).map(|id| StateMachine::build(&index, id));
-        self.states.selected = selected.and_then(|n| self.states.find(&n));
-        self.states.hovered = None;
-        self.states.built = Some((self.doc.generation, self.states.root.clone()));
-        self.states.needs_layout = true;
+        let selected = v.selected.and_then(|h| v.name_of(h)).map(str::to_owned);
+        let root_changed = v.built.as_ref().is_none_or(|(_, r)| *r != v.root);
+        v.machine = v.current_root().and_then(|r| g.build(doc, r));
+        v.selected = selected.and_then(|n| v.find(&n));
+        v.hovered = None;
+        v.built = Some((generation, v.root.clone()));
+        v.needs_layout = true;
         if root_changed {
-            self.states.camera.needs_fit = true;
+            v.camera.needs_fit = true;
         }
     }
 
-    pub(super) fn set_state_root(&mut self, root: Option<String>, remember: bool) {
-        if root.as_deref() == self.states.current_root() && root.is_some() {
+    pub(super) fn set_graph_root(&mut self, g: Graph, root: Option<String>, remember: bool) {
+        let v = self.graph_mut(g);
+        if root.as_deref() == v.current_root() && root.is_some() {
             return;
         }
-        if remember && let Some(cur) = self.states.current_root().map(str::to_owned) {
-            self.states.back.push(cur);
+        if remember && let Some(cur) = v.current_root().map(str::to_owned) {
+            v.back.push(cur);
         }
-        self.states.root = root;
-        self.states.selected = None;
-        self.ensure_states();
+        v.root = root;
+        v.selected = None;
+        self.ensure_graph(g);
     }
 
-    pub(super) fn state_back(&mut self) {
-        if let Some(prev) = self.states.back.pop() {
-            self.set_state_root(Some(prev), false);
+    pub(super) fn graph_back(&mut self, g: Graph) {
+        if let Some(prev) = self.graph_mut(g).back.pop() {
+            self.set_graph_root(g, Some(prev), false);
+        }
+    }
+
+    /// The "Show Element" commands of a graph view.
+    pub(super) fn run_graph_root(&mut self, g: Graph, i: u16) {
+        if let Some(q) = self.graph(g).candidates.get(usize::from(i)).cloned() {
+            self.set_canvas(g.canvas());
+            self.set_graph_root(g, Some(q), true);
         }
     }
 
@@ -192,22 +284,36 @@ impl Ui {
         root_items(&self.ibd.candidates, self.ibd.current_root(), !self.ibd.back.is_empty(), Command::IbdRoot, Command::IbdBack, "No parts with an inside in this file")
     }
 
-    /// The elements the state machine view can show, for a menu.
-    pub(super) fn state_menu_items(&self) -> Vec<Item> {
-        root_items(&self.states.candidates, self.states.current_root(), !self.states.back.is_empty(), Command::StateRoot, Command::StateBack, "No state machines in this file")
+    /// The elements a graph view can show, for a menu.
+    pub(super) fn graph_menu_items(&self, g: Graph) -> Vec<Item> {
+        let v = self.graph(g);
+        match g {
+            Graph::States => root_items(&v.candidates, v.current_root(), !v.back.is_empty(), Command::StateRoot, Command::StateBack, "No state machines in this file"),
+            Graph::Actions => root_items(&v.candidates, v.current_root(), !v.back.is_empty(), Command::ActionRoot, Command::ActionBack, "No actions with steps in this file"),
+        }
     }
 
     /// The menu of the "Showing …" chip of the diagram shown.
     pub(super) fn root_menu_items(&self) -> Vec<Item> {
-        if self.canvas == Canvas::States { self.state_menu_items() } else { self.ibd_menu_items() }
+        match Graph::of(self.canvas) {
+            Some(g) => self.graph_menu_items(g),
+            None => self.ibd_menu_items(),
+        }
     }
 
-    /// The element shown by the interconnection or state machine view, for the chip.
+    /// The element shown by the interconnection, state or action view, for the chip.
     pub(super) fn root_label(&self) -> Option<String> {
         match self.canvas {
             Canvas::Interconnection => Some(self.ibd.root_label()),
-            Canvas::States => Some(self.states.root_label()),
-            _ => None,
+            c => Graph::of(c).map(|g| self.graph(g).root_label()),
+        }
+    }
+
+    /// Whether the chip's view has somewhere to go back to.
+    pub(super) fn root_has_back(&self) -> bool {
+        match Graph::of(self.canvas) {
+            Some(g) => !self.graph(g).back.is_empty(),
+            None => !self.ibd.back.is_empty(),
         }
     }
 
@@ -244,34 +350,36 @@ impl Ui {
                 }
                 self.ibd.camera.press_pan(p);
             }
-            Canvas::States => {
+            c if Graph::of(c).is_some() => {
+                let g = Graph::of(c).expect("checked");
                 let Some(pane) = self.panes.diagram.filter(|&r| contains(r, p)) else { return };
-                let world = self.states.camera.to_world(p, pane, self.dpi);
+                let world = self.graph(g).camera.to_world(p, pane, self.dpi);
                 if button == MouseButton::Left {
-                    let hit = self.states.hit(world);
-                    // Double click on a typed state: its definition's own view.
+                    let hit = self.graph(g).hit(world);
+                    // Double click on a typed state or action: its definition's own view.
                     if self.is_double_click(p) && let Some(Hit::State(i)) = hit {
-                        let ty = self.states.machine.as_ref().and_then(|m| m.states.get(i)).filter(|_| i > 0).and_then(|s| s.type_name.clone());
+                        let ty = self.graph(g).machine.as_ref().and_then(|m| m.states.get(i)).filter(|_| i > 0).and_then(|s| s.type_name.clone());
                         if let Some(ty) = ty {
-                            if self.states.candidates.contains(&ty) {
-                                self.set_state_root(Some(ty), true);
+                            if self.graph(g).candidates.contains(&ty) {
+                                self.set_graph_root(g, Some(ty), true);
                             } else {
-                                self.notify(format!("{} has no inner states to show", ty.rsplit("::").next().unwrap_or(&ty)));
+                                let what = if g == Graph::States { "inner states" } else { "steps" };
+                                self.notify(format!("{} has no {what} to show", ty.rsplit("::").next().unwrap_or(&ty)));
                             }
                             return;
                         }
                     }
-                    self.states.selected = hit;
-                    // A transition without a name has no element to select: show its line.
+                    self.graph_mut(g).selected = hit;
+                    // A transition or succession without a name has no element to select: show its line.
                     if let Some(Hit::Transition(t)) = hit
-                        && let Some(tr) = self.states.machine.as_ref().and_then(|m| m.transitions.get(t))
+                        && let Some(tr) = self.graph(g).machine.as_ref().and_then(|m| m.transitions.get(t))
                         && tr.qualified_name.is_none()
                         && let Some(offset) = tr.offset
                     {
                         self.code.goto(offset);
                     }
                 }
-                self.states.camera.press_pan(p);
+                self.graph_mut(g).camera.press_pan(p);
             }
             _ => {
                 if button == MouseButton::Left {
@@ -291,11 +399,14 @@ impl Ui {
                 }
                 self.ibd.hovered = over(self).and_then(|pane| self.ibd.hit(self.ibd.camera.to_world(p, pane, self.dpi)));
             }
-            Canvas::States => {
-                if self.states.camera.pan_motion(p) {
+            c if Graph::of(c).is_some() => {
+                let g = Graph::of(c).expect("checked");
+                if self.graph_mut(g).camera.pan_motion(p) {
                     return;
                 }
-                self.states.hovered = over(self).and_then(|pane| self.states.hit(self.states.camera.to_world(p, pane, self.dpi)));
+                let v = self.graph(g);
+                let hovered = over(self).and_then(|pane| v.hit(v.camera.to_world(p, pane, self.dpi)));
+                self.graph_mut(g).hovered = hovered;
             }
             _ => self.reqs_motion(p),
         }
@@ -320,18 +431,20 @@ impl Ui {
     pub(super) fn canvas_key(&mut self, key: &Key) -> bool {
         match self.canvas {
             Canvas::General => false,
-            Canvas::Interconnection | Canvas::States => {
-                let states = self.canvas == Canvas::States;
+            Canvas::Interconnection | Canvas::States | Canvas::Actions => {
+                let g = Graph::of(self.canvas);
                 match key {
                     Key::Named(NamedKey::Backspace) => {
-                        if states { self.state_back() } else { self.ibd_back() }
+                        match g {
+                            Some(g) => self.graph_back(g),
+                            None => self.ibd_back(),
+                        }
                         true
                     }
                     Key::Named(NamedKey::Escape) => {
-                        if states {
-                            self.states.selected = None;
-                        } else {
-                            self.ibd.selected = None;
+                        match g {
+                            Some(g) => self.graph_mut(g).selected = None,
+                            None => self.ibd.selected = None,
                         }
                         true
                     }
@@ -374,17 +487,25 @@ impl Ui {
                 }
                 None => "No part or part definition with inner parts, ports or connections in this file".to_owned(),
             }),
-            Canvas::States => Some(match &self.states.machine {
-                Some(m) => {
-                    let states = m.states.iter().filter(|s| !s.is_pseudo()).count().saturating_sub(1);
-                    let mut s = format!("State machine {} · {states} states · {} transitions", self.states.root_label(), m.transitions.len());
-                    if m.unresolved > 0 {
-                        s += &format!(" · {} transition ends not found", m.unresolved);
+            c @ (Canvas::States | Canvas::Actions) => {
+                let g = Graph::of(c).expect("graph canvas");
+                let v = self.graph(g);
+                Some(match &v.machine {
+                    Some(m) => {
+                        let nodes = m.states.iter().filter(|s| !s.is_pseudo()).count().saturating_sub(1);
+                        let (what, nodes_word, edges_word) = match g {
+                            Graph::States => ("State machine", "states", "transitions"),
+                            Graph::Actions => ("Action flow of", "actions", "flows"),
+                        };
+                        let mut s = format!("{what} {} · {nodes} {nodes_word} · {} {edges_word}", v.root_label(), m.transitions.len());
+                        if m.unresolved > 0 {
+                            s += &format!(" · {} {} ends not found", m.unresolved, if g == Graph::States { "transition" } else { "flow" });
+                        }
+                        s
                     }
-                    s
-                }
-                None => "No state definition or state usage with states or transitions in this file".to_owned(),
-            }),
+                    None => format!("No {} definition or usage with {} in this file", g.noun(), if g == Graph::States { "states or transitions" } else { "steps" }),
+                })
+            }
             Canvas::Requirements => Some("Click a requirement to show it in the code · ↑ ↓ move · Ctrl+E exports CSV".to_owned()),
             Canvas::Traceability => Some("S satisfy · V verify · D dependency · red rows are untraced · Shift+wheel scrolls sideways".to_owned()),
             Canvas::Allocation => Some("A allocate · P perform · E exhibit · red rows: nothing carries them out · Ctrl+E exports CSV".to_owned()),
@@ -397,13 +518,13 @@ impl Ui {
         Canvas::ALL
             .iter()
             .enumerate()
-            .map(|(i, &c)| {
-                let keys = ["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7"][i];
-                Item::radio(format!("{} View", c.label()), Command::Canvas(c), self.canvas == c).shortcut(keys)
-            })
+            .map(|(i, &c)| Item::radio(format!("{} View", c.label()), Command::Canvas(c), self.canvas == c).shortcut(SHORTCUT_KEYS[i]))
             .collect()
     }
 }
+
+/// Ctrl+1 … Ctrl+8, one per canvas in [`Canvas::ALL`] order.
+const SHORTCUT_KEYS: [&str; 8] = ["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8"];
 
 /// A radio item per candidate, then Back.
 fn root_items(candidates: &[String], current: Option<&str>, can_go_back: bool, pick: fn(u16) -> Command, back: Command, none: &str) -> Vec<Item> {
