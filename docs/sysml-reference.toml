@@ -1,0 +1,2043 @@
+# SysML v2 quick reference for EagleView.
+#
+# A curated, hand-written summary of the textual notation, meant to be embedded in
+# the application (include_str!) and shown as hover / F1 help and in a docs pane.
+#
+# Written in our own words from "OMG Systems Modeling Language (SysML) v2.0, Part 1:
+# Language Specification" (formal/2026-03-02). The specification stays the authority.
+# `spec` fields point at the clause (chapter 7) that describes the construct.
+#
+# Layout
+#   [meta]        document information
+#   [[category]]  ordered groups used for the index / table of contents
+#   [[entry]]     one documented thing:
+#       names     one or more spellings that all map to this entry (keywords, symbols, concepts)
+#       category  id of a [[category]]
+#       kind      "keyword" | "symbol" | "operator" | "concept"
+#       summary   one line, suitable for a tooltip
+#       syntax    typical declaration shapes (optional)
+#       details   prose; paragraphs separated by a blank line
+#       example   a short, self-contained snippet (optional)
+#       see       names of related entries (optional)
+#       spec      clause of the Part 1 specification (optional)
+#
+# Every reserved word in sysml/src/lexer.rs KEYWORDS has an entry.
+
+[meta]
+title = "SysML v2 quick reference"
+language_version = "2.0"
+source = "OMG Systems Modeling Language (SysML) v2.0, Part 1: Language Specification, formal/2026-03-02"
+source_url = "https://www.omg.org/spec/SysML/2.0/"
+notice = "Summary written for EagleView; it is not the OMG specification and does not replace it. SysML and OMG are trademarks of the Object Management Group."
+
+# ---------------------------------------------------------------------------
+# Categories
+# ---------------------------------------------------------------------------
+
+[[category]]
+id = "basics"
+title = "Basics"
+summary = "Definitions, usages, names, specialization and the general shape of a declaration."
+
+[[category]]
+id = "packages"
+title = "Packages and annotations"
+summary = "Organizing a model, imports, aliases, comments and documentation."
+
+[[category]]
+id = "data"
+title = "Data and values"
+summary = "Attributes, enumerations, feature values and expressions."
+
+[[category]]
+id = "structure"
+title = "Structure"
+summary = "Items, parts, ports, connections, interfaces, allocations and occurrences."
+
+[[category]]
+id = "behavior"
+title = "Behavior"
+summary = "Actions, control flow, flows and messages, states and transitions."
+
+[[category]]
+id = "analysis"
+title = "Constraints, requirements and cases"
+summary = "Constraints, calculations, requirements, analysis, verification and use cases."
+
+[[category]]
+id = "views"
+title = "Views and metadata"
+summary = "Viewpoints, views, renderings, metadata and user-defined keywords."
+
+[[category]]
+id = "expressions"
+title = "Expressions and operators"
+summary = "Operators and literals available in value expressions, guards and constraints."
+
+[[category]]
+id = "symbols"
+title = "Symbols"
+summary = "Punctuation that stands in for keywords."
+
+# ---------------------------------------------------------------------------
+# Concepts
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["definition and usage"]
+category = "basics"
+kind = "concept"
+summary = "A definition says what something is; a usage says where and how it occurs."
+details = '''
+Most SysML constructs come in pairs. A definition (`part def Motor`) is a reusable
+type: it describes a kind of thing and the features every such thing has. A usage
+(`part motor : Motor`) is a role that something plays inside a context. The usage is
+typed by a definition and can add or tighten features for its own context.
+
+Define a concept once and use it in many places. Every kind keyword (`part`, `item`,
+`action`, `state`, `requirement`, ...) works this way.
+'''
+example = '''
+part def Motor {
+    attribute rpm : Real;
+}
+
+part def Drone {
+    part leftMotor : Motor;
+    part rightMotor : Motor;
+}
+'''
+see = ["def", "specializes", "subsets", "redefines"]
+spec = "7.6"
+
+[[entry]]
+names = ["declaration shape"]
+category = "basics"
+kind = "concept"
+summary = "Order of the parts of a usage or definition declaration."
+syntax = [
+    "[visibility] [abstract] <kind> def [<shortname>] Name [specializes General, ...] { ... }",
+    "[visibility] [direction] [derived] [abstract] [constant] [ref] <kind> [<shortname>] name [multiplicity] [: Type] [:> subsetted] [:>> redefined] [= value] { ... }",
+]
+details = '''
+Prefix keywords come before the kind keyword in this order: direction (`in`, `out`,
+`inout`), `derived`, `abstract`, `constant`, then `ref`. After the name come the typing
+(`:`), multiplicity (`[...]`, which can also sit after the type), subsetting (`:>`),
+redefinition (`:>>`) and an optional value (`=`, `:=`, `default`).
+
+A body is either `{ members }` or a semicolon when there is nothing inside.
+'''
+example = '''
+abstract part def Component;
+in attribute setpoint : Real default 0.0;
+ref part owner[0..1] : Person;
+'''
+spec = "7.6.3"
+
+[[entry]]
+names = ["names and short names"]
+category = "basics"
+kind = "concept"
+summary = "Plain, quoted and short names, and qualified names."
+syntax = [
+    "name",
+    "'a name with spaces'",
+    "<shortName> name",
+    "Package::Element::Nested",
+]
+details = '''
+A name is a plain identifier or text in single quotes (`'Flight Control'`). A short
+name goes in angle brackets before the name (`<R1> MaximumMass`); for requirements it
+doubles as the requirement id. `::` separates the parts of a qualified name, and `.`
+separates the steps of a feature chain.
+'''
+example = '''
+requirement def <'1.1'> MaximumMass;
+part def 'Flight Controller';
+'''
+see = ["::", "feature chain"]
+spec = "7.2.2"
+
+[[entry]]
+names = ["feature chain"]
+category = "basics"
+kind = "concept"
+summary = "A path of usages joined with dots, such as vehicle.engine.power."
+details = '''
+Unlike a qualified name, a feature chain records the path of usages that was taken, so
+different paths to the same usage stay distinguishable. The first name is resolved in the
+current scope; each later name is resolved inside the previous one, public members only.
+
+Chains are how connections, flows, bindings and subsetting reach nested features.
+'''
+example = '''
+connect vehicle.wheelAssembly.wheels to vehicle.road;
+flow fuelTank.fuelOut to engine.fuelIn;
+'''
+see = ["connect", "flow", "bind"]
+spec = "7.6.6"
+
+[[entry]]
+names = ["multiplicity"]
+category = "basics"
+kind = "concept"
+summary = "How many values a usage can have, written in square brackets."
+syntax = ["[n]", "[lower..upper]", "[0..*]", "[1..*]"]
+details = '''
+`[2]` means exactly two, `[0..1]` zero or one, `[1..*]` at least one, `*` unbounded. A
+single bound is used for both ends, except `[*]` which means `[0..*]`. Bounds can be
+literals or other usages. Follow it with `ordered` and/or `nonunique` if needed.
+
+If you give none, a usage inherits it from what it subsets or redefines; otherwise the
+default is `[0..*]`, tightened to `[1..1]` for attributes, items, parts and ports that
+are nested in a definition or usage and specialize nothing explicitly.
+'''
+example = '''
+part wheels[4] : Wheel;
+ref part driver[0..1] : Person;
+attribute scores[1..*] ordered : Integer;
+'''
+see = ["ordered", "nonunique"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["implicit specialization"]
+category = "basics"
+kind = "concept"
+summary = "Every definition and usage silently specializes a base element from the standard library."
+details = '''
+An `attribute def` specializes `Attributes::AttributeValue`, a `part def` specializes
+`Parts::Part`, an unadorned `part` usage subsets `Parts::parts`, and so on. You never
+have to write these; tools add them when your declaration does not already reach the
+base type. They are why library features like `mass` or `startShot` are available on
+things you declare.
+'''
+spec = "7.6.8"
+
+[[entry]]
+names = ["units"]
+category = "data"
+kind = "concept"
+summary = "A quantity value is a number followed by a unit in square brackets."
+details = '''
+The attribute type only names the kind of quantity (`MassValue`, `LengthValue`); the unit
+appears on the value. That lets the same attribute accept `2[kg]` or `4.4[lb]` and be
+converted automatically. Units come from the Quantities and Units domain library
+(`ISQ`, `SI`).
+'''
+example = '''
+import ISQ::*;
+import SI::*;
+
+attribute mass : MassValue = 1500[kg];
+attribute speedLimit : SpeedValue = 100[km/h];
+'''
+see = ["attribute", "import"]
+spec = "7.7.1"
+
+# ---------------------------------------------------------------------------
+# Basics
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["def"]
+category = "basics"
+kind = "keyword"
+summary = "Turns a kind keyword into a definition: part def, action def, ..."
+syntax = ["<kind> def Name [specializes Super] { ... }"]
+details = '''
+`def` follows the kind keyword (`part def`, `item def`, `port def`, `action def`,
+`state def`, `requirement def`, and so on). Without it you are declaring a usage.
+'''
+example = '''
+part def Battery;
+part battery : Battery;
+'''
+see = ["definition and usage", "abstract"]
+spec = "7.6.2"
+
+[[entry]]
+names = ["abstract"]
+category = "basics"
+kind = "keyword"
+summary = "Marks a definition or usage that cannot stand on its own; it must be specialized."
+syntax = ["abstract part def Name;", "abstract part name;"]
+details = '''
+Every instance of an abstract element must also be an instance of some concrete element
+that specializes it. Use it for generalizations such as `Vehicle` that only make sense
+through `Truck`, `Automobile`, and so on. `variation` elements are always abstract, so
+do not combine the two.
+'''
+example = '''
+abstract part def Vehicle;
+part def Truck :> Vehicle;
+'''
+see = ["specializes", "variation"]
+spec = "7.6.2"
+
+[[entry]]
+names = ["specializes", ":>"]
+category = "basics"
+kind = "keyword"
+summary = "Definition-level specialization (subclassification), or subsetting on a usage."
+syntax = ["part def Sub specializes Super, Other;", "part def Sub :> Super;", "part sub :> super;"]
+details = '''
+On a definition, `:>` (or `specializes`) says the new definition is a more specific kind
+of its general definitions and inherits their features. On a usage the same symbol is
+`subsets`: the usage's values are a subset of the values of the usage it names.
+'''
+example = '''
+part def Automobile specializes Vehicle;
+part def Truck :> Vehicle;
+'''
+see = ["subsets", "redefines", "defined by"]
+spec = "7.6.2"
+
+[[entry]]
+names = ["subsets"]
+category = "basics"
+kind = "keyword"
+summary = "A usage whose values are a subset of another usage's values."
+syntax = ["part name subsets other;", "part name :> other;"]
+details = '''
+The subsetting usage inherits the features of the usage it subsets. Use it when something
+is a particular case of an existing role: `ref item mother subsets parent`.
+'''
+example = '''
+part def Person {
+    ref part parent[2] : Person;
+    ref part mother[1] : Person subsets parent;
+}
+'''
+see = ["specializes", "redefines"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["redefines", ":>>"]
+category = "basics"
+kind = "keyword"
+summary = "Replaces an inherited feature with a refined version of the same feature."
+syntax = ["attribute newName redefines oldName;", ":>> oldName = value;", "part newName :>> oldName : Narrower;"]
+details = '''
+Redefinition is a stricter form of subsetting: in the specialized context the new feature
+takes the place of the old one. Use it to narrow the type, change the multiplicity, or to
+give an inherited attribute a value. The leading `:>> name` shorthand (no keyword or name
+before it) redefines a feature while setting its value, and is how you configure
+parameters of a usage's definition.
+'''
+example = '''
+part def Drone :> Vehicle {
+    :>> mass = 2.5[kg];
+}
+item def ChildlessPerson :> Person {
+    ref item redefines children[0];
+}
+'''
+see = ["subsets", "specializes"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["defined by", "typed by", "defined", "typed", ":"]
+category = "basics"
+kind = "keyword"
+summary = "Gives the definition (type) of a usage."
+syntax = ["part engine : Engine;", "part engine defined by Engine;", "part engine typed by Engine;"]
+details = '''
+`:`, `defined by` and `typed by` are the same thing. A usage can have several
+definitions, comma separated, as long as they suit the kind of usage (a part usage can
+only be defined by item or part definitions).
+'''
+example = '''
+part vehicle : Vehicle, Insured;
+'''
+see = ["definition and usage"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["ref"]
+category = "basics"
+kind = "keyword"
+summary = "Declares a referential usage: it refers to something owned elsewhere."
+syntax = ["ref part driver : Person;"]
+details = '''
+A composite usage (the default for parts, items and actions) owns its values: they cannot
+outlive the owner. A `ref` usage only points at things that exist independently. Directed
+usages (`in`, `out`, `inout`) and attributes are always referential.
+'''
+example = '''
+part def Vehicle {
+    part engine : Engine;          // owned
+    ref part driver[0..1] : Person; // referenced
+}
+'''
+see = ["in", "constant"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["in", "out", "inout"]
+category = "basics"
+kind = "keyword"
+summary = "Direction of a usage: input, output, or both."
+syntax = ["in attribute x : Real;", "out item result;", "inout part shared;"]
+details = '''
+`in` is something supplied from outside the owner, `out` is something the owner (or its
+insides) provides, and `inout` is both. They turn usages into parameters on actions,
+calculations, constraints and so on, and into the directed features of ports.
+Directed usages are always referential.
+'''
+example = '''
+action def TakePicture {
+    in scene : Scene;
+    out picture : Picture;
+}
+'''
+see = ["port", "action", "ref"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["derived"]
+category = "basics"
+kind = "keyword"
+summary = "The usage's value is computed from others, normally through a value expression."
+syntax = ["derived attribute name : Type = expression;"]
+example = '''
+item def TestRecord {
+    attribute scores[1..*] : Integer;
+    derived attribute averageScore : Rational = sum(scores) / size(scores);
+}
+'''
+see = ["=", "default"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["constant"]
+category = "basics"
+kind = "keyword"
+summary = "The value cannot change during the life of its owner."
+syntax = ["constant attribute name : Type = value;"]
+details = '''
+Only meaningful where the value could otherwise vary over time, i.e. when the owner is an
+occurrence (an item, part, action, ...).
+'''
+example = '''
+part def Aircraft {
+    constant attribute registration : String = "N12345";
+}
+'''
+see = ["readonly", "occurrence"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["readonly"]
+category = "basics"
+kind = "keyword"
+summary = "Reserved word; the textual notation expresses fixed values with constant."
+details = '''
+`readonly` appears among the reserved words and in the graphical property adornments, but
+the textual notation covered in the specification uses `constant` for values that do not
+change.
+'''
+see = ["constant"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["ordered", "nonunique"]
+category = "basics"
+kind = "keyword"
+summary = "Multiplicity modifiers: values are indexed in order, and/or may repeat."
+syntax = ["part wheels[4] ordered;", "attribute samples[*] ordered nonunique : Real;"]
+details = '''
+By default a usage's values are unordered and unique. `ordered` lets you index them
+(1-based); `nonunique` allows the same value more than once. Either can follow a
+multiplicity or stand alone, in either order.
+'''
+see = ["multiplicity"]
+spec = "7.6.3"
+
+[[entry]]
+names = ["variation", "variant"]
+category = "basics"
+kind = "keyword"
+summary = "Variation points and their choices, for modeling product variability."
+syntax = [
+    "variation part def Choices { variant part a : A; variant part b : B; }",
+    "variation part engine : Engine { variant smallEngine; variant bigEngine; }",
+]
+details = '''
+A `variation` is an abstract definition or usage whose members, declared with `variant`,
+are the allowed choices; selecting one variant configures the system. Variants inside a
+variation must be of the same kind as the variation. A variant can also point at an
+existing usage (`variant smallEngine;`).
+'''
+example = '''
+part def Vehicle {
+    variation part transmission : Transmission {
+        variant part manual : ManualTransmission;
+        variant part automatic : AutomaticTransmission;
+    }
+}
+'''
+see = ["abstract"]
+spec = "7.6.7"
+
+# ---------------------------------------------------------------------------
+# Packages and annotations
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["package"]
+category = "packages"
+kind = "keyword"
+summary = "A namespace that groups model elements."
+syntax = ["package Name { ... }", "package <short> Name;"]
+details = '''
+Packages are how you organize a model. Members are public by default; use `private` or
+`protected` to restrict them. Packages can hold definitions, usages, imports, aliases,
+filters, comments and other packages.
+'''
+example = '''
+package DroneSystem {
+    private import ScalarValues::*;
+    part def Drone;
+}
+'''
+see = ["import", "alias", "private"]
+spec = "7.5"
+
+[[entry]]
+names = ["library", "standard"]
+category = "packages"
+kind = "keyword"
+summary = "Marks a package as a model library; standard marks the official libraries."
+syntax = ["library package Name { ... }", "standard library package Name { ... }"]
+details = '''
+`library package` declares reusable library content. `standard` is reserved for the
+packages of the standard SysML and KerML libraries (for example `ISQ` or `Parts`).
+'''
+see = ["package"]
+spec = "7.5.1"
+
+[[entry]]
+names = ["import"]
+category = "packages"
+kind = "keyword"
+summary = "Makes elements of another namespace visible in this one."
+syntax = [
+    "import Pkg::Element;",
+    "import Pkg::*;",
+    "import Pkg::**;",
+    "import Pkg::*::**;",
+    "private import Pkg::*;",
+    "import Pkg::**[filter-expression];",
+    "import all Pkg::*;",
+]
+details = '''
+`Pkg::Element` imports one member, `Pkg::*` imports all visible members of a namespace,
+`Pkg::**` imports them recursively (the package, its members, and members of nested
+packages), and `Pkg::*::**` does so without importing `Pkg` itself. Add `[expr]` to
+import only elements that satisfy a Boolean condition.
+
+An import is private unless you write `public`; a public import re-exports the imported
+names. `import all` ignores the visibility of the members it brings in.
+'''
+example = '''
+package Study {
+    private import ISQ::*;
+    public import Parts::Part;
+    import DesignModel::**[@Approval and level > 1];
+}
+'''
+see = ["private", "public", "filter", "expose", "::"]
+spec = "7.5.3"
+
+[[entry]]
+names = ["all"]
+category = "packages"
+kind = "keyword"
+summary = "In import all, imports regardless of member visibility."
+syntax = ["import all Pkg::*;"]
+details = '''
+`all` is reserved; its use in the textual notation covered here is as a modifier on
+`import`, which then also brings in members that visibility rules would normally hide.
+(`expose` behaves as if it always had `all`.)
+'''
+see = ["import", "expose"]
+spec = "7.5.3"
+
+[[entry]]
+names = ["alias"]
+category = "packages"
+kind = "keyword"
+summary = "Gives an existing element another name in a namespace."
+syntax = ["alias Name for Qualified::Name;", "alias <short> Name for Qualified::Name;"]
+details = '''
+The element keeps its own name; the alias only exists in the namespace that declares it.
+Aliases can be `private`, `public` or `protected`, and can carry a body with comments.
+'''
+example = '''
+package Units {
+    alias Kg for ISQ::kg;
+    private alias D for Deep::Nested::Name;
+}
+'''
+see = ["import", "for"]
+spec = "7.5.2"
+
+[[entry]]
+names = ["public", "private", "protected"]
+category = "packages"
+kind = "keyword"
+summary = "Visibility of a member or import. Public is the default for members."
+syntax = ["private part def Internal;", "protected attribute secret;", "public import Pkg::*;"]
+details = '''
+`public` members are visible outside the namespace, `private` ones are not. `protected`
+is the same as `private` in a package, but in a definition or usage it additionally makes
+the member visible to specializations. For imports, the default is private.
+'''
+see = ["import", "package"]
+spec = "7.5.2"
+
+[[entry]]
+names = ["filter"]
+category = "packages"
+kind = "keyword"
+summary = "A condition on what a package imports, or what a view includes."
+syntax = ["filter <boolean model-level expression>;"]
+details = '''
+In a package, a `filter` is tested on every element the package imports; only elements for
+which all filters are true are imported. In a view definition or usage, it selects the
+kinds of element that appear in the view. Conditions usually test metadata (`@Safety`) or
+the abstract-syntax kind of an element (`@SysML::PartUsage`).
+'''
+example = '''
+package Approved {
+    public import DesignModel::**;
+    filter @Approval and Approval::approved;
+}
+
+view def PartsOnly {
+    filter @SysML::PartUsage;
+}
+'''
+see = ["import", "view", "@", "expose"]
+spec = "7.5.4"
+
+[[entry]]
+names = ["dependency"]
+category = "packages"
+kind = "keyword"
+summary = "Records that elements depend on others, without any behavior or semantics attached."
+syntax = ["dependency [Name from] client1, client2 to supplier1, supplier2;"]
+details = '''
+A documentation relationship: a change to a supplier may affect its clients. It has no
+effect on the model's meaning, but is useful for traceability. The name and its `from` are
+optional together.
+'''
+example = '''
+dependency FlightToHardware from FlightSoftware to Avionics;
+dependency FlightSoftware to Avionics;
+'''
+spec = "7.3"
+
+[[entry]]
+names = ["comment", "about", "locale"]
+category = "packages"
+kind = "keyword"
+summary = "A comment annotating one or more elements, optionally in a given locale."
+syntax = [
+    "comment [Name] about Element1, Element2 /* text */",
+    "comment [Name] locale \"en_US\" /* text */",
+    "/* free comment about the enclosing namespace */",
+]
+details = '''
+A comment body is text between `/*` and `*/`. Inside a namespace the `about` list can be
+dropped, and the comment annotates the namespace; a bare `/* ... */` there is a comment
+too. `locale` states the language and region of the text. `about` is also used by
+`metadata` to name the annotated elements.
+'''
+example = '''
+part def Drone;
+comment DroneNote about Drone /* Quad-rotor delivery drone. */
+'''
+see = ["doc", "metadata"]
+spec = "7.4.2"
+
+[[entry]]
+names = ["doc"]
+category = "packages"
+kind = "keyword"
+summary = "Documentation of the element that contains it."
+syntax = ["doc /* text */", "doc Name /* text */"]
+details = '''
+Like a comment, but always about its owner. Inside a `requirement` it is the requirement's
+informal text, and inside a `constraint` placed in a requirement it is the assumption or
+condition in prose.
+'''
+example = '''
+part def Drone {
+    doc /* A small delivery drone. */
+}
+'''
+see = ["comment", "requirement"]
+spec = "7.4.2"
+
+[[entry]]
+names = ["rep", "language"]
+category = "packages"
+kind = "keyword"
+summary = "A textual representation of an element in another language."
+syntax = ["rep Name language \"ocl\" /* body */", "language \"python\" /* body */"]
+details = '''
+Lets a model carry the body of, for example, a constraint or calculation in another
+language, tagged with the language name. EagleView treats the body as opaque text.
+'''
+spec = "7.4.3"
+
+# ---------------------------------------------------------------------------
+# Data and values
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["attribute"]
+category = "data"
+kind = "keyword"
+summary = "Data values: numbers, quantities with units, strings, or structures of them."
+syntax = ["attribute def Name { ... }", "attribute name : Type [= value];"]
+details = '''
+Attribute usages are always referential. They can be typed by SysML attribute definitions
+or by data types from the Kernel library (`String`, `Boolean`, `Integer`, `Rational`,
+`Real`, `Complex`, ...). Quantities use the units libraries (`MassValue`, `LengthValue`,
+...), so the unit comes with the value, not the type. Owned by an item or part, the value
+may change over time.
+'''
+example = '''
+part def Battery {
+    attribute mass : MassValue = 1.2[kg];
+    attribute cellCount : Natural = 6;
+    attribute label : String = "main pack";
+}
+'''
+see = ["enum", "units", "="]
+spec = "7.7"
+
+[[entry]]
+names = ["enum"]
+category = "data"
+kind = "keyword"
+summary = "An enumeration: an attribute restricted to a fixed set of named values."
+syntax = ["enum def Name { enum a; enum b; }", "enum def Name { a; b; }", "enum name = value;"]
+details = '''
+An enumeration definition can only contain its enumerated values. It cannot specialize
+another enumeration definition (adding values would break specialization). If it
+specializes an attribute definition, each value can bind that definition's features.
+'''
+example = '''
+enum def FlightMode {
+    idle;
+    hover;
+    cruise;
+}
+attribute mode : FlightMode = FlightMode::hover;
+'''
+see = ["attribute"]
+spec = "7.8"
+
+[[entry]]
+names = ["=", ":=", "default"]
+category = "data"
+kind = "keyword"
+summary = "Feature values: bound (=), initial (:=), or default."
+syntax = [
+    "attribute x : T = expr;",
+    "attribute x : T := expr;",
+    "attribute x : T default = expr;",
+    "attribute x : T default := expr;",
+    "attribute x : T default expr;",
+]
+details = '''
+`=` binds the usage to the value for good: the two are always equal. `:=` only sets the
+initial value, which can change later (the owner must be an occurrence). Adding `default`
+makes it a fallback used when nothing else is given when an instance is created; for the
+bound default form the `=` may be omitted.
+'''
+example = '''
+attribute months : Natural = 12;
+part def Counter { attribute count : Natural := 0; }
+part def Vehicle { attribute mass : MassValue default 1500[kg]; }
+'''
+see = ["derived", "assign", "attribute"]
+spec = "7.13.4"
+
+# ---------------------------------------------------------------------------
+# Structure
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["occurrence"]
+category = "structure"
+kind = "keyword"
+summary = "Something that exists in time and space; the base kind of items, parts and actions."
+syntax = ["occurrence def Name { ... }", "occurrence name : Def { ... }"]
+details = '''
+Occurrences have temporal extent (a lifetime that can be divided into time slices and
+snapshots) and spatial extent. Items, parts, actions, states, constraints and others are
+all kinds of occurrence, which is why their features can change over time.
+'''
+example = '''
+occurrence def Flight {
+    ref part aircraft : Aircraft;
+    timeslice preflight;
+    timeslice inflight;
+    timeslice postflight;
+}
+'''
+see = ["timeslice", "snapshot", "individual", "event"]
+spec = "7.9"
+
+[[entry]]
+names = ["timeslice", "snapshot"]
+category = "structure"
+kind = "keyword"
+summary = "A portion of an occurrence's lifetime: with duration (timeslice) or at an instant (snapshot)."
+syntax = ["timeslice name;", "snapshot part name;", "timeslice part name;"]
+details = '''
+A time slice is a phase of the lifetime (preflight, inflight, postflight). A snapshot is a
+time slice with zero duration, such as takeoff. They can only be declared inside an
+occurrence definition or usage; use `then` to order them.
+'''
+example = '''
+occurrence def Flight {
+    timeslice preflight;
+    then timeslice inflight;
+    then timeslice postflight;
+}
+'''
+see = ["occurrence", "then", "individual"]
+spec = "7.9.3"
+
+[[entry]]
+names = ["individual"]
+category = "structure"
+kind = "keyword"
+summary = "A single specific thing with its own identity, rather than a kind of thing."
+syntax = ["individual part def Car1 :> Car;", "individual part redefines aircraft : TestPlane_1;"]
+details = '''
+`individual def` classifies exactly one real or perceived thing (a particular aircraft or
+flight). An individual usage plays a role for some period of time and must have exactly
+one individual definition.
+'''
+example = '''
+individual def Flight_248 :> Flight;
+individual flightRecord : Flight_248 {
+    individual timeslice redefines inflight;
+}
+'''
+see = ["occurrence", "timeslice"]
+spec = "7.9.4"
+
+[[entry]]
+names = ["event"]
+category = "structure"
+kind = "keyword"
+summary = "A reference to something that happens during an occurrence's lifetime."
+syntax = [
+    "event occurrence name[mult];",
+    "event occurrence name[mult] references some.occurrence;",
+    "event some.occurrence[mult];",
+]
+details = '''
+An event occurrence usage says that a particular occurrence takes place within its owner,
+without committing to how. With no `references`, the event is the usage itself. The short
+form `event a.b;` (no name) points at an occurrence reached through a feature chain, for
+example the `source` or `target` end of a message. Event usages are always referential.
+Messages connect events: the source event and the target event of a transfer.
+'''
+example = '''
+part controller {
+    event occurrence sendControl;
+}
+part engine {
+    event occurrence receiveControl;
+}
+message of ControlSignal from controller.sendControl to engine.receiveControl;
+'''
+see = ["message", "occurrence"]
+spec = "7.9.5"
+
+[[entry]]
+names = ["item"]
+category = "structure"
+kind = "keyword"
+summary = "A thing that can exist, be stored or flow through a system, without further structure."
+syntax = ["item def Name { ... }", "item name : Def;"]
+details = '''
+Items are the general kind of thing that parts specialize. Use an item for things that
+flow (fuel, data packets, passengers) or are stored. Items are occurrences, so they can
+have behavior and change over time.
+'''
+example = '''
+item def Fuel;
+part def FuelTank {
+    ref item fuel : Fuel;
+}
+'''
+see = ["part", "flow"]
+spec = "7.10"
+
+[[entry]]
+names = ["part"]
+category = "structure"
+kind = "keyword"
+summary = "The basic unit of structure: a system, subsystem or component."
+syntax = ["part def Name [:> Super] { ... }", "part name [mult] : Def { ... }", "ref part name : Def;"]
+details = '''
+SysML has no separate words for system, subsystem, assembly or component; they are all
+parts, composed by nesting. A nested part is owned by its container (composite); mark it
+`ref` to refer to a part that lives elsewhere. A part usage defaults to multiplicity `[1..1]`
+when it is nested in a definition or usage and specializes nothing.
+'''
+example = '''
+part def Drone {
+    part battery : Battery;
+    part rotors[4] : Rotor;
+    ref part pilot[0..1] : Person;
+}
+'''
+see = ["item", "port", "connect", "perform"]
+spec = "7.11"
+
+[[entry]]
+names = ["port"]
+category = "structure"
+kind = "keyword"
+summary = "A connection point on a part where things can flow in or out."
+syntax = ["port def Name { in ...; out ...; }", "port name : PortDef;", "port name : ~PortDef;"]
+details = '''
+A port definition describes what passes through the interaction point through directed
+features. A conjugated port (`~PortDef`) has the same features with `in` and `out`
+swapped, so the two ends of a connection can fit each other. Declaring a port definition
+`P` implicitly declares the conjugate `P::'~P'`.
+'''
+example = '''
+port def PowerPort {
+    out item power : PowerValue;
+}
+part def Motor {
+    port powerIn : ~PowerPort;
+}
+'''
+see = ["~", "interface", "connect", "in"]
+spec = "7.12"
+
+[[entry]]
+names = ["connection", "connect", "end"]
+category = "structure"
+kind = "keyword"
+summary = "Links between things. end declares the participants; connect ... to ... uses a link."
+syntax = [
+    "connection def Name { end part a : A; end part b : B; }",
+    "connection name : Def connect x to y;",
+    "connect x to y;",
+    "connect (a, b, c);",
+    "end part a ::> something[1];",
+]
+details = '''
+A connection definition needs at least two `end` features (binary when exactly two); ends
+are referential and have multiplicity `[1..1]` unless declared otherwise. A connection
+usage names the actual participants after `connect`, using `references` (`::>`) on each
+end or the short `connect x to y` form. Connections can cross levels using feature
+chains. For connections between ports, prefer `interface`.
+'''
+example = '''
+connection def Cable {
+    end part a : Device;
+    end part b : Device;
+    attribute length : LengthValue;
+}
+part system {
+    part hub : Hub;
+    part sensor : Sensor;
+    connection feed : Cable connect hub to sensor;
+}
+'''
+see = ["interface", "bind", "references", "feature chain"]
+spec = "7.13"
+
+[[entry]]
+names = ["bind", "binding"]
+category = "structure"
+kind = "keyword"
+summary = "Declares that two features always have the same value (are equal)."
+syntax = ["bind a = b;", "binding Name bind a = b;"]
+details = '''
+A binding is the tightest link: both sides are the same thing. If the declaration part is
+empty, `binding` can be omitted. It is not an occurrence, so it has no time slices.
+Value assignments with `=` are shorthand for a nested binding.
+'''
+example = '''
+part def Vehicle {
+    part fuelTank { out fuelFlowOut : Fuel; }
+    part engine { in fuelFlowIn : Fuel; }
+    bind fuelTank.fuelFlowOut = engine.fuelFlowIn;
+}
+'''
+see = ["connect", "="]
+spec = "7.13.3"
+
+[[entry]]
+names = ["references", "::>"]
+category = "structure"
+kind = "keyword"
+summary = "Reference subsetting: this feature is another, already declared, feature."
+syntax = ["end part a references mainSwitch;", "end part a ::> mainSwitch[1];", "perform action x references Y;"]
+details = '''
+Used to point an end of a connection at a particular usage, and to say which action,
+state or event a `perform`, `exhibit` or `event` usage stands for.
+'''
+see = ["connect", "perform", "exhibit", "event"]
+spec = "7.13.2"
+
+[[entry]]
+names = ["crosses", "=>"]
+category = "structure"
+kind = "keyword"
+summary = "Cross subsetting: an end of a binary connection subsets a feature owned by the other end's type."
+syntax = ["end part device => connectedDevices;"]
+details = '''
+Only end features can cross-subset, at most once. It lets the multiplicity of one side be
+read from a feature declared on the type at the other end.
+'''
+spec = "7.13.2"
+
+[[entry]]
+names = ["interface"]
+category = "structure"
+kind = "keyword"
+summary = "A connection whose ends are ports."
+syntax = [
+    "interface def Name { end a : PortDef; end b : ~PortDef; }",
+    "interface name : Def connect p1 to p2;",
+    "interface p1 to p2;",
+]
+details = '''
+Declared like a connection, but the ends must be ports, so `port` is optional on ends.
+If you leave out the declaration part you write `interface a to b;`. Transfers sent via
+a port automatically target the port at the other end of the interface.
+'''
+example = '''
+port def FuelingPort { out fuel : Fuel; }
+interface def FuelingInterface {
+    end fuelOutPort : FuelingPort;
+    end fuelInPort : ~FuelingPort;
+}
+interface fuelLine : FuelingInterface connect tank.fuelingPort to engine.fuelingPort;
+'''
+see = ["port", "connect", "send", "accept"]
+spec = "7.14"
+
+[[entry]]
+names = ["allocation", "allocate"]
+category = "structure"
+kind = "keyword"
+summary = "Assigns responsibility for something to something else, e.g. logical to physical."
+syntax = [
+    "allocation def Name { end a : A; end b : B; }",
+    "allocation name : Def allocate x to y;",
+    "allocate x to y;",
+]
+details = '''
+Always binary. Allocations can nest to allocate parts of the two ends. Typical uses:
+logical component to physical component, function to part, requirement to element.
+'''
+example = '''
+part system : LogicalSystem;
+part device : PhysicalDevice;
+allocate system to device {
+    allocate system.component to device.assembly;
+}
+'''
+see = ["connect"]
+spec = "7.15"
+
+[[entry]]
+names = ["message", "of", "flow"]
+category = "behavior"
+kind = "keyword"
+summary = "Flows: a message names a transfer between events; a flow moves a payload between features."
+syntax = [
+    "flow def Name { ref item :>> payload : Fuel; end a; end b; }",
+    "flow [name : Def] [of payload : Type] from a.out to b.in;",
+    "flow a.out to b.in;",
+    "message [name] [of Payload] from srcEvent to targetEvent;",
+    "succession flow a.out to b.in;",
+]
+details = '''
+`message` only says that a transfer may occur between two events; it is always abstract.
+`flow` is a connection that also moves a payload from an output feature of the source to an
+input feature of the target: the last element of each feature chain is the output or
+input. `succession flow` additionally enforces order: the source must finish before the
+target starts. `of` states the payload (name, type, multiplicity).
+'''
+example = '''
+part def Vehicle {
+    part tank { out fuelOut : Fuel; }
+    part engine { in fuelIn : Fuel; }
+    flow tank.fuelOut to engine.fuelIn;
+}
+action def TakePicture {
+    action focus { out image : Image; }
+    action shoot { in image : Image; }
+    succession flow focus.image to shoot.image;
+}
+'''
+see = ["send", "accept", "event", "succession"]
+spec = "7.16"
+
+# ---------------------------------------------------------------------------
+# Behavior
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["action"]
+category = "behavior"
+kind = "keyword"
+summary = "Behavior: something that is done, with inputs and outputs and an ordering of steps."
+syntax = ["action def Name { in ...; out ...; ... }", "action name : Def { ... }"]
+details = '''
+Directed usages in the body (`in`, `out`, `inout`) are the parameters. Nest actions to
+build a behavior, order them with `first ... then ...` and control nodes, and move data
+with `flow` or `bind`. A specializing action must redefine the parameters of the actions
+it specializes, in order, with the same direction (fewer are allowed if there is a single
+super-action).
+'''
+example = '''
+action def TakePicture {
+    in scene : Scene;
+    out picture : Picture;
+
+    action focus : Focus { in scene; out image; }
+    action shoot : Shoot { in image; out picture; }
+
+    bind focus.scene = scene;
+    flow focus.image to shoot.image;
+    first focus then shoot;
+    bind picture = shoot.picture;
+}
+'''
+see = ["first", "then", "perform", "flow", "fork"]
+spec = "7.17"
+
+[[entry]]
+names = ["first", "then", "succession"]
+category = "behavior"
+kind = "keyword"
+summary = "Ordering: first A then B means B starts after A finishes."
+syntax = [
+    "succession [name] first a then b;",
+    "first a then b;",
+    "then b;",
+    "then action b { ... }",
+    "first [0..1] a then [0..1] b;",
+]
+details = '''
+A succession relates two occurrence usages in time. Writing `then` directly in front of the
+next action (or state, timeslice, ...) is shorthand for a succession from the previous
+usage: the keyword `first` and the source are inferred. In a state body, `then name;`
+right after `entry` selects the initial state. Multiplicities on the ends constrain how
+many predecessors and successors there may be.
+'''
+example = '''
+action def Boot {
+    action selfTest;
+    then action loadConfig;
+    then action start;
+}
+'''
+see = ["decide", "fork", "if", "transition", "timeslice"]
+spec = "7.13.5"
+
+[[entry]]
+names = ["fork", "join", "merge", "decide"]
+category = "behavior"
+kind = "keyword"
+summary = "Control nodes that split or combine the flow between actions."
+syntax = ["fork name;", "join name;", "merge name;", "decide [name];"]
+details = '''
+`fork` starts all outgoing successions concurrently; `join` waits for all incoming ones;
+`decide` chooses exactly one outgoing succession (use guards: `if cond then target;`
+and `else target;`); `merge` continues when any one incoming succession completes.
+Control nodes only appear in the body of an action definition or usage and are always
+composite.
+'''
+example = '''
+action def Process {
+    fork f;
+    first f then analyzeA;
+    first f then analyzeB;
+    action analyzeA;
+    action analyzeB;
+    first analyzeA then j;
+    first analyzeB then j;
+    join j;
+    then decide;
+        if ok then publish;
+        else retry;
+    action publish;
+    action retry;
+}
+'''
+see = ["first", "if", "else"]
+spec = "7.17.3"
+
+[[entry]]
+names = ["if", "else"]
+category = "behavior"
+kind = "keyword"
+summary = "A guard on a succession or transition, a conditional action, or a conditional expression."
+syntax = [
+    "first a if condition then b;",
+    "if condition then target; else other;",
+    "if condition { ... } else { ... }",
+    "if condition ? valueIfTrue else valueIfFalse",
+]
+details = '''
+Four uses. On a succession or transition, `if` gives a guard; `else` is taken when all
+preceding guards were false. As an action, `if cond { ... } else { ... }` performs one
+of two clauses; the clause bodies need braces, and `else if` chains are allowed. In an
+expression, `if c ? a else b` yields `a` or `b`.
+'''
+example = '''
+action def Control {
+    in speed : Real;
+    if speed < 10 {
+        action boost : Boost { }
+    } else {
+        action cruise : Cruise { }
+    }
+}
+'''
+see = ["decide", "transition", "while"]
+spec = "7.17.5"
+
+[[entry]]
+names = ["while", "until", "for", "loop"]
+category = "behavior"
+kind = "keyword"
+summary = "Loop actions: while ... until ..., and for x in sequence."
+syntax = [
+    "while condition { ... }",
+    "while condition { ... } until stopCondition;",
+    "for x : Type in sequence { ... }",
+    "for i in 1..n { ... }",
+]
+details = '''
+A `while` loop evaluates its condition before each iteration and, if an `until` clause is
+given, evaluates that after each iteration (not before the first). A `for` loop evaluates
+the sequence once and runs the body with the loop variable bound to each value in turn.
+The body must be in braces. `loop` is reserved but does not appear in the textual
+notation of these constructs. (`for` also introduces the target of an `alias`.)
+'''
+example = '''
+action def Integrate {
+    in samples : Real[*];
+    attribute total : Real := 0.0;
+    for s in samples {
+        assign total := total + s;
+    }
+}
+'''
+see = ["assign", "if"]
+spec = "7.17.12"
+
+[[entry]]
+names = ["assign"]
+category = "behavior"
+kind = "keyword"
+summary = "Assignment action: sets a time-varying feature to a new value."
+syntax = ["assign target.feature := expression;", "assign feature := expression;"]
+details = '''
+The value on the right is evaluated when the action runs. The target's feature must be
+allowed to change over time (owned by an occurrence, not `constant`). Without an explicit
+target, it is the owner of the assign action. Assignments must be in an action, in a state's
+`entry`/`do`/`exit`, or in a transition's effect.
+'''
+example = '''
+action tick {
+    attribute count : Natural := 0;
+    assign count := count + 1;
+}
+'''
+see = [":=", "entry", "terminate"]
+spec = "7.17.9"
+
+[[entry]]
+names = ["send", "via"]
+category = "behavior"
+kind = "keyword"
+summary = "Send a payload via a sender to a receiver (send ... via ... to ...)."
+syntax = [
+    "send payload via sender to receiver;",
+    "send new Signal() via port;",
+    "action name send payload to receiver;",
+]
+details = '''
+Sends the value of `payload` from the sender to the receiver; usually only one of `via`
+and `to` is given. Inside a part, the default sender is the part itself. Through an
+interface, a send via a port is delivered to the port at the other end. `via` also names
+the receiver of an `accept`.
+'''
+example = '''
+part monitor {
+    action report {
+        in part destination;
+        perform getReading { out reading : SensorReading; }
+        send getReading.reading to destination;
+    }
+}
+'''
+see = ["accept", "to", "new", "interface"]
+spec = "7.17.7"
+
+[[entry]]
+names = ["to", "from"]
+category = "behavior"
+kind = "keyword"
+summary = "Introduce the target and the source in connect, flow, message, send, allocate and dependency."
+syntax = [
+    "connect a to b;",
+    "flow a.out to b.in;",
+    "message of T from srcEvent to targetEvent;",
+    "send payload to receiver;",
+    "allocate a to b;",
+    "dependency [Name from] clients to suppliers;",
+]
+details = '''
+`to` marks the target (or receiver, or supplier) and `from` the source (or client) in the
+relationship-style declarations above. In `connect (a, b, c)` the n-ary form uses a list
+instead.
+'''
+see = ["connect", "flow", "message", "send", "allocate", "dependency"]
+
+[[entry]]
+names = ["accept"]
+category = "behavior"
+kind = "keyword"
+summary = "Waits for a payload to arrive at a receiver; also used as a transition trigger."
+syntax = [
+    "accept [name :] Type [via receiver];",
+    "accept after <duration>;",
+    "accept at <instant>;",
+    "accept when <boolean expression>;",
+]
+details = '''
+A bare type is the type of the payload expected. With `via` you name the receiver
+(usually a port). As a transition trigger it makes the transition fire when something
+arrives. Three special triggers: `at` (an absolute time), `after` (a duration since
+entering the source state), `when` (a condition becoming true).
+'''
+example = '''
+part controller {
+    action receive {
+        accept reading : SensorReading via controller;
+    }
+}
+state def Idle {
+    transition first waiting accept after 5[min] then done;
+}
+'''
+see = ["send", "after", "at", "when", "transition"]
+spec = "7.17.8"
+
+[[entry]]
+names = ["after", "at", "when"]
+category = "behavior"
+kind = "keyword"
+summary = "Triggers: wait a duration, wait for a time, or wait for a condition to become true."
+syntax = ["accept after 5[s]", "accept at launchTime", "accept when fuelMass < 5[kg]"]
+details = '''
+Used after `accept`. `after` takes a duration, `at` takes an absolute time, `when` takes a
+Boolean expression and triggers when it changes from false to true (or immediately if it
+is already true).
+'''
+see = ["accept", "transition"]
+spec = "7.17.8"
+
+[[entry]]
+names = ["terminate"]
+category = "behavior"
+kind = "keyword"
+summary = "Ends the life of an occurrence, by default the action that contains it."
+syntax = ["terminate target;", "terminate;", "action name terminate target;"]
+details = '''
+Without a target, terminates the enclosing action only (not the actions further out). A
+transition to a terminate action immediately ends the containing state; a transition to
+`done` only marks the end.
+'''
+example = '''
+state def Run {
+    accept Abort via commPort then stop;
+    action stop terminate;
+}
+'''
+see = ["transition", "state"]
+spec = "7.17.10"
+
+[[entry]]
+names = ["perform"]
+category = "behavior"
+kind = "keyword"
+summary = "A part performs an action; inside another action it acts like a call."
+syntax = [
+    "perform action name [references Action];",
+    "perform ActionName;",
+    "perform Action { in x = ...; out y; }",
+]
+details = '''
+In the body of a part, the part becomes the performer of the action. Inside an action it
+is a call to the performed action, with parameters bound in its body. A perform action
+is always referential. `perform Name` is shorthand: it names the performed action and has
+no name of its own.
+'''
+example = '''
+part def Vehicle {
+    perform action drive references Mission::drive;
+}
+action def Startup {
+    perform Utility::selfCheck { out status; }
+}
+'''
+see = ["action", "exhibit", "references"]
+spec = "7.17.6"
+
+[[entry]]
+names = ["new"]
+category = "behavior"
+kind = "keyword"
+summary = "Creates a new instance, e.g. new Signal() in a send action."
+syntax = ["new Type(args)"]
+example = '''
+action alert {
+    send new Alarm(level = 2) via commPort;
+}
+'''
+see = ["send"]
+spec = "7.17.7"
+
+[[entry]]
+names = ["state"]
+category = "behavior"
+kind = "keyword"
+summary = "A condition of a system with entry, do and exit actions and transitions between states."
+syntax = [
+    "state def Name { entry ...; do ...; exit ...; ... }",
+    "state name : Def { ... }",
+    "state def Name parallel { state a; state b; }",
+]
+details = '''
+A state is an action that persists. Substates are exclusive by default; `parallel` makes
+them concurrent (no transitions between them). The initial substate is chosen with a
+succession from `entry`: `entry; then off;`. When a transition fires, the source's `do` is
+interrupted, then its `exit` runs, then the transition's effect, then the target's
+`entry`, then its `do`.
+'''
+example = '''
+state def Power {
+    entry; then off;
+    state off;
+    accept TurnOn via commPort then on;
+    state on;
+    accept after 5[min] then off;
+}
+'''
+see = ["transition", "entry", "do", "exit", "parallel", "exhibit"]
+spec = "7.18"
+
+[[entry]]
+names = ["entry", "do", "exit"]
+category = "behavior"
+kind = "keyword"
+summary = "Actions performed when entering a state, while in it, and when leaving it."
+syntax = [
+    "entry [action name ...];",
+    "do action name { ... }",
+    "exit action name : Def;",
+    "entry assign x := v;",
+    "do send ...;",
+    "do existingAction;",
+]
+details = '''
+At most one of each per state. `entry;` with no action is an empty entry action, commonly
+used as the source of the initial succession. Followed by the name of an existing action
+they reference it. The `do` keyword is also used in the effect of a transition.
+'''
+example = '''
+state def Exercising {
+    entry action warmup : WarmUp;
+    do action exercise : Exercise;
+    exit action cooldown : Cooldown;
+}
+'''
+see = ["state", "transition"]
+spec = "7.18.2"
+
+[[entry]]
+names = ["transition"]
+category = "behavior"
+kind = "keyword"
+summary = "A possible move between states, with optional trigger, guard and effect."
+syntax = [
+    "transition [name first] source [accept ...] [if guard] [do effect] then target;",
+    "accept ... then target;",
+    "if guard then target;",
+]
+details = '''
+The parts must come in this order: `accept` trigger, `if` guard, `do` effect. Fires only
+while the source is active, only if the guard is true and, if there is a trigger, when the
+trigger accepts. The target may be a state, `done` (final state) or a `terminate` action.
+When written right after a state declaration, the `transition first x` prefix can be
+dropped and the source is the preceding state.
+'''
+example = '''
+state def OnOff {
+    entry; then off;
+    state off;
+    accept TurnOn via commPort
+        if isEnabled
+        do action powerUp : PowerUp
+        then on;
+    state on;
+    accept after 5[min] then off;
+}
+'''
+see = ["state", "accept", "if", "do", "terminate"]
+spec = "7.18.3"
+
+[[entry]]
+names = ["parallel"]
+category = "behavior"
+kind = "keyword"
+summary = "Makes the substates of a state concurrent."
+syntax = ["state def Name parallel { state a; state b; }"]
+details = '''
+All nested states are active at the same time. Transitions between concurrent substates
+are not allowed.
+'''
+see = ["state"]
+spec = "7.18.2"
+
+[[entry]]
+names = ["exhibit"]
+category = "behavior"
+kind = "keyword"
+summary = "A part exhibits a state, the way it performs an action."
+syntax = ["exhibit state name [references State];", "exhibit State;"]
+details = '''
+In the body of a part, `exhibit` states which state behavior the part shows. An exhibit
+state is always referential. `exhibit Name` is the shorthand with no declared name.
+'''
+example = '''
+part def Vehicle {
+    exhibit state operating references VehicleStates::operating;
+}
+'''
+see = ["state", "perform"]
+spec = "7.18.4"
+
+# ---------------------------------------------------------------------------
+# Constraints, requirements and cases
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["calc", "return"]
+category = "analysis"
+kind = "keyword"
+summary = "A calculation: a parameterized expression that returns a result."
+syntax = [
+    "calc def Name { in x : T; return r : R; expression }",
+    "calc def Name { in x; return r : R = expression; }",
+    "calc name : Def { in x = value; return r; }",
+]
+details = '''
+Like an action, but it always has a result. `return` declares the result parameter. The
+last thing in the body can be a result expression, written without a trailing semicolon,
+which is bound to the result. You can also bind the result on the `return` declaration
+instead.
+'''
+example = '''
+calc def Average {
+    in scores[1..*] : Rational;
+    return : Rational;
+    sum(scores) / size(scores)
+}
+'''
+see = ["constraint", "action", "="]
+spec = "7.19"
+
+[[entry]]
+names = ["constraint", "assert"]
+category = "analysis"
+kind = "keyword"
+summary = "A Boolean condition that can be checked; assert says it must always hold."
+syntax = [
+    "constraint def Name { in x : T; boolean-expression }",
+    "constraint name : Def { in x = value; }",
+    "assert constraint { expr }",
+    "assert not constraint { expr }",
+    "assert Name;",
+    "assert not Name;",
+]
+details = '''
+A constraint's result expression (last in the body, no semicolon) must be Boolean. A
+plain `constraint` states a condition that may or may not hold; `assert constraint` asserts
+that it is always true, `assert not constraint` that it is always false. `assert Name;`
+asserts an existing constraint, with values supplied in a body.
+'''
+example = '''
+constraint def IsFull {
+    in tank : FuelTank;
+    tank.fuelLevel == tank.maxFuelLevel
+}
+part vehicle {
+    part fuelTank : FuelTank;
+    assert constraint { fuelTank.fuelLevel >= 0 }
+}
+'''
+see = ["requirement", "calc"]
+spec = "7.20"
+
+[[entry]]
+names = ["requirement", "require", "assume"]
+category = "analysis"
+kind = "keyword"
+summary = "A constraint a subject must satisfy: if the assumptions hold, the required constraints must hold."
+syntax = [
+    "requirement def [<id>] Name { doc /* text */ subject s : T; ... }",
+    "requirement [<id>] name : Def { ... }",
+    "assume constraint { ... }",
+    "require constraint { ... }",
+    "assume Name;",
+    "require Name;",
+]
+details = '''
+The informal text is the `doc` comment. A short name doubles as the requirement id. Formally
+the requirement is an implication: if all `assume` constraints are true, all `require`
+constraints must be true. The first parameter is the `subject`; further ones can be `actor`
+and `stakeholder`. Nested requirements are subrequirements and become required constraints
+of the container.
+'''
+example = '''
+requirement def <'1.1'> MaximumMass {
+    doc /* The actual mass shall not exceed the required mass. */
+    subject vehicle : Vehicle;
+    attribute massRequired : MassValue;
+    assume constraint { massRequired > 0[kg] }
+    require constraint { vehicle.mass <= massRequired }
+}
+'''
+see = ["satisfy", "subject", "constraint", "concern"]
+spec = "7.21"
+
+[[entry]]
+names = ["satisfy", "by"]
+category = "analysis"
+kind = "keyword"
+summary = "Asserts that a design element meets a requirement."
+syntax = [
+    "satisfy requirement name : Req by element { ... }",
+    "satisfy Requirement by element;",
+    "not satisfy Requirement by element;",
+    "satisfy Requirement;",
+]
+details = '''
+The satisfying feature goes after `by`. When nested in a part, it is that part and `by` can
+be dropped. `not satisfy` states the opposite. Values for the requirement's parameters can be
+given in a body. `by` is also the second word in `typed by` and `defined by`.
+'''
+example = '''
+part vehicle1 : Vehicle;
+satisfy MaximumMass by vehicle1 {
+    :>> massRequired = 2000[kg];
+}
+'''
+see = ["requirement", "verify", "assert"]
+spec = "7.21.4"
+
+[[entry]]
+names = ["subject", "actor", "stakeholder", "objective"]
+category = "analysis"
+kind = "keyword"
+summary = "Distinguished parameters and goal of requirements and cases."
+syntax = [
+    "subject name : Type;",
+    "actor name : PartDef;",
+    "stakeholder name : PartDef;",
+    "objective [name] { ... }",
+]
+details = '''
+`subject` is the thing the requirement or case is about; it is always an input and must
+come before the other parameters. `actor` and `stakeholder` are part usages: actors take
+part in a case; stakeholders hold a concern. In a case, the `objective` is a requirement
+about the case's result (what it is supposed to achieve); in a verification case, it lists
+the requirements to `verify`.
+'''
+example = '''
+use case def 'Provide Transportation' {
+    subject vehicle : Vehicle;
+    actor driver : Person;
+    objective {
+        doc /* Transport the driver from A to B. */
+    }
+}
+'''
+see = ["requirement", "case", "verify"]
+spec = "7.21.2"
+
+[[entry]]
+names = ["concern", "frame"]
+category = "analysis"
+kind = "keyword"
+summary = "A stakeholder concern, and a viewpoint's framing of it."
+syntax = ["concern def Name { stakeholder s : T; ... }", "concern name : Def;", "frame concernName;"]
+details = '''
+A concern is a requirement-like element, written the same way, whose required constraints
+describe what a stakeholder cares about. A viewpoint `frame`s one or more concerns to say
+which of them the view should address.
+'''
+example = '''
+concern 'system breakdown' {
+    stakeholder se : 'Systems Engineer';
+}
+viewpoint def 'Structure Perspective' {
+    frame 'system breakdown';
+}
+'''
+see = ["viewpoint", "requirement", "stakeholder"]
+spec = "7.21.3"
+
+[[entry]]
+names = ["case"]
+category = "analysis"
+kind = "keyword"
+summary = "A set of steps that produce a result for a subject to meet an objective."
+syntax = ["case def Name { subject ...; actor ...; objective { ... } ... }"]
+details = '''
+The common basis of analysis, verification and use cases. A case is a calculation: it
+returns a result, and its objective is about that result.
+'''
+example = '''
+case def FaultRecovery {
+    subject system : AutomationSystem;
+    actor engineer : Person;
+    objective { doc /* Return the system to nominal operation. */ }
+}
+'''
+see = ["analysis", "verification", "use"]
+spec = "7.22"
+
+[[entry]]
+names = ["analysis"]
+category = "analysis"
+kind = "keyword"
+summary = "A case whose steps analyze a subject, such as a calculation or a trade-off study."
+syntax = ["analysis def Name { subject ...; objective ...; return ...; }", "analysis name : Def { ... }"]
+details = '''
+Its objective must be bound to the analysis subject. The Analysis library provides
+`TradeStudy` for comparing alternatives against an evaluation function and an objective
+like `MaximizeObjective`.
+'''
+example = '''
+analysis engineTradeStudy : TradeStudy {
+    subject : Engine = (engine4cyl, engine6cyl);
+    objective : MaximizeObjective;
+    return part :>> selectedAlternative : Engine;
+}
+'''
+see = ["case", "calc"]
+spec = "7.23"
+
+[[entry]]
+names = ["verification", "verify"]
+category = "analysis"
+kind = "keyword"
+summary = "A case that checks requirements against a subject and returns a verdict."
+syntax = [
+    "verification def Name { subject s : T; objective { verify Requirement; } ... }",
+    "verify requirement name : Req;",
+    "verify Requirement;",
+]
+details = '''
+The objective of a verification case can contain `verify` usages, each naming a
+requirement to check; their subject is bound to the case's subject. The result is a verdict
+(pass, fail, inconclusive, error); the `PassIf` calculation turns a Boolean into a verdict.
+Annotate with the `VerificationMethod` metadata (inspect, analyze, demo, test).
+'''
+example = '''
+verification def MassTest {
+    import VerificationCases::*;
+    subject testVehicle : Vehicle;
+    objective { verify vehicleMassRequirement; }
+    metadata VerificationMethod { kind = VerificationMethodKind::test; }
+    return verdict : VerdictKind = PassIf(testVehicle.mass <= 2000[kg]);
+}
+'''
+see = ["requirement", "satisfy", "objective", "metadata"]
+spec = "7.24"
+
+[[entry]]
+names = ["use", "include"]
+category = "analysis"
+kind = "keyword"
+summary = "use case: what a subject does of value for actors. include use case reuses another."
+syntax = [
+    "use case def Name { subject ...; actor ...; objective ...; ... }",
+    "use case name : Def;",
+    "include use case name [references UseCase];",
+    "include UseCase;",
+]
+details = '''
+`use` only appears in `use case`. An included use case is a kind of perform: the including
+use case performs it as one of its steps.
+'''
+example = '''
+use case def Transport {
+    subject vehicle : Vehicle;
+    actor driver : Person;
+    include use case refuel : Refuel;
+}
+'''
+see = ["case", "perform", "actor"]
+spec = "7.25"
+
+# ---------------------------------------------------------------------------
+# Views and metadata
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["viewpoint"]
+category = "views"
+kind = "keyword"
+summary = "The perspective a view must satisfy, framing stakeholder concerns."
+syntax = ["viewpoint def Name { frame ...; require constraint { ... } }", "viewpoint name : Def { ... }"]
+details = '''
+A viewpoint is a requirement about a view; its subject must be a view. A viewpoint nested in
+a view is automatically asserted to be satisfied by that view; otherwise use `satisfy`.
+'''
+see = ["view", "frame", "concern", "satisfy"]
+spec = "7.26.3"
+
+[[entry]]
+names = ["view"]
+category = "views"
+kind = "keyword"
+summary = "A query on the model plus a rendering of its results."
+syntax = [
+    "view def Name { filter ...; render ...; }",
+    "view name : Def { expose Pkg::**; filter ...; render ...; }",
+]
+details = '''
+A view definition says what kinds of element may appear (`filter`) and how to draw them
+(`render`). A view usage picks the elements to include with `expose`, can add filters, and
+can override the rendering. Diagram compartments and the standard diagrams are view usages.
+'''
+example = '''
+view def PartStructure {
+    import Views::*;
+    filter @SysML::PartUsage;
+    render asTreeDiagram;
+}
+view droneParts : PartStructure {
+    expose DroneSystem::**;
+}
+'''
+see = ["expose", "filter", "render", "viewpoint"]
+spec = "7.26.2"
+
+[[entry]]
+names = ["expose"]
+category = "views"
+kind = "keyword"
+summary = "Selects the elements a view shows; an import that ignores visibility."
+syntax = ["expose Pkg::**;", "expose Pkg::*;", "expose Pkg::**[filter-expression];"]
+details = '''
+Written like an import, but without a visibility. The exposed elements are visible inside
+the view and its specializations only.
+'''
+see = ["view", "import", "filter"]
+spec = "7.26.2"
+
+[[entry]]
+names = ["render", "rendering"]
+category = "views"
+kind = "keyword"
+summary = "How a view's content is presented."
+syntax = ["rendering def Name;", "rendering name : Def;", "render renderingName;"]
+details = '''
+A rendering is a kind of part. The language does not say how renderings draw; tools provide
+libraries of rendering usages (the Views library has `asTreeDiagram`, `asElementTable`,
+`asTextualNotation`, ...). A view's `render` names the one to use.
+'''
+see = ["view"]
+spec = "7.26.4"
+
+[[entry]]
+names = ["metadata", "@"]
+category = "views"
+kind = "keyword"
+summary = "Tagging elements with extra, user-defined information."
+syntax = [
+    "metadata def Name { attribute ...; }",
+    "metadata Name about Element1, Element2;",
+    "@Name { feature = value; }",
+    "metadata name : Name about X { ref :>> a = value; }",
+]
+details = '''
+A metadata definition is like an item definition; a metadata usage applies it to elements
+named after `about`, or to the enclosing element if `about` is omitted. Features must be
+bound to model-level evaluable values. `@Name` is the same as `metadata Name`. Filters and
+views can select elements by their metadata.
+'''
+example = '''
+metadata def Safety {
+    attribute critical : Boolean;
+}
+part def Battery {
+    @Safety { critical = true; }
+}
+'''
+see = ["about", "#", "filter", "meta"]
+spec = "7.27"
+
+[[entry]]
+names = ["#"]
+category = "views"
+kind = "symbol"
+summary = "User-defined keyword: a metadata name used as a prefix on a declaration."
+syntax = ["#Name part def X;", "#Name part x;", "#Name def X;"]
+details = '''
+Annotates the declaration with the named metadata. If that metadata is semantic metadata,
+the declaration also implicitly specializes the base type it names, which is how a model
+adds its own domain vocabulary (`#situation occurrence def Failure;`).
+'''
+see = ["metadata"]
+spec = "7.27.4"
+
+# ---------------------------------------------------------------------------
+# Expressions and operators
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["true", "false", "null"]
+category = "expressions"
+kind = "keyword"
+summary = "Boolean literals and the empty value."
+details = '''
+`null` stands for no value (the empty sequence). Compare with `??` to supply a fallback.
+'''
+see = ["??", "and"]
+
+[[entry]]
+names = ["and", "or", "xor", "not", "implies"]
+category = "expressions"
+kind = "operator"
+summary = "Boolean operators."
+syntax = ["a and b", "a or b", "a xor b", "not a", "a implies b"]
+details = '''
+`implies` is true when the left side is false or the right side is true. `and` and `or`
+are the logical operators; `&` and `|` are their non-short-circuit forms. `not` also
+appears in `assert not constraint` and `not satisfy`.
+'''
+see = ["constraint", "if"]
+
+[[entry]]
+names = ["istype", "hastype", "as", "meta"]
+category = "expressions"
+kind = "operator"
+summary = "Type tests and casts: x istype T, x hastype T, x as T, x meta M."
+syntax = ["x istype T", "x hastype T", "x @ T", "x as T", "x meta SysML::Usage"]
+details = '''
+`istype` is true if x is an instance of T or of one of its specializations; `hastype` if its
+type is exactly T. `@` is the same as `istype`. `as` casts x to T. `meta` casts an element to
+its reflective model-element value, which is used with semantic metadata.
+'''
+see = ["@", "metadata"]
+
+[[entry]]
+names = ["??", "->", "..", "#(", "**", "==", "!=", "===", "!=="]
+category = "expressions"
+kind = "operator"
+summary = "Other expression operators."
+details = '''
+`a ?? b` is a if present, else b. `seq->op(...)` applies a collection operation (`->size()`,
+`->including(x)`, `->select{...}`). `1..n` builds an integer sequence. `seq#(i)` picks the i-th
+element (1-based). `**` is exponentiation. `==` and `!=` compare values; `===` and `!==`
+compare identity.
+'''
+example = '''
+attribute n = scores->size();
+attribute last = scores#(n);
+attribute indices = 1..n;
+'''
+
+# ---------------------------------------------------------------------------
+# Symbols
+# ---------------------------------------------------------------------------
+
+[[entry]]
+names = ["::"]
+category = "symbols"
+kind = "symbol"
+summary = "Separates the parts of a qualified name: Package::Element."
+details = '''
+Used to reach a member of a namespace from outside, and with `*` and `**` after an import.
+'''
+see = ["import", "names and short names"]
+spec = "7.5.3"
+
+[[entry]]
+names = ["~"]
+category = "symbols"
+kind = "symbol"
+summary = "Conjugated port: the same port with in and out reversed."
+syntax = ["port p : ~PortDef;"]
+details = '''
+`~P` is shorthand for the conjugate definition `P::'~P'`. Use it on one side of an
+interface so the two ends fit.
+'''
+see = ["port", "interface"]
+spec = "7.12.3"
+
+[[entry]]
+names = ["[ ]"]
+category = "symbols"
+kind = "symbol"
+summary = "Multiplicity after a declaration, or a unit after a number."
+details = '''
+`part wheels[4]` is a multiplicity, `5[kg]` is a quantity with a unit, and `Pkg::**[expr]` is
+a filtered import.
+'''
+see = ["multiplicity", "units", "import"]
+
+[[entry]]
+names = ["{ }", ";"]
+category = "symbols"
+kind = "symbol"
+summary = "A body: members in braces, or a semicolon for none."
+details = '''
+Every definition or usage ends either with `{ ... }` (members and imports inside) or with a
+semicolon when it has nothing inside. A calculation or constraint result expression is the
+exception: it has no trailing semicolon.
+'''
+spec = "7.5"
+
+[[entry]]
+names = ["//", "/* */"]
+category = "symbols"
+kind = "symbol"
+summary = "Line comments and block comments."
+details = '''
+`// text` is ignored to the end of the line. `/* text */` is a comment in the model that
+annotates the enclosing namespace; it is kept, whereas a `//` comment is not. `doc /* */`
+is documentation.
+'''
+see = ["comment", "doc"]
+spec = "7.4.2"

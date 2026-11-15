@@ -247,6 +247,34 @@ impl CodeView {
         self.editor.offset_at(line, col)
     }
 
+    /// The highlighted token under `p` in the text area (not the gutter or
+    /// past a line end): its byte range, highlight and screen rectangle on
+    /// the hovered line.
+    pub fn token_at(&self, p: [f32; 2]) -> Option<(usize, usize, Highlight, Rect)> {
+        let l = &self.layout;
+        if !contains(l.code, p) || p[0] < l.text_x || self.highlights.0 != self.editor.version() {
+            return None;
+        }
+        let ed = &self.editor;
+        let line = ((p[1] - l.origin_y) / l.line_height + self.scroll[1]).floor();
+        let col = ((p[0] - l.text_x + self.scroll[0]) / l.advance).floor();
+        if line < 0.0 || line as usize >= ed.line_count() || col < 0.0 {
+            return None;
+        }
+        let line = line as usize;
+        let at = ed.offset_at(line, col as usize);
+        if at >= ed.line_end(line) || ed.col_of(at) != col as usize {
+            return None;
+        }
+        let hl = &self.highlights.1;
+        let &(a, b, h) = hl.get(hl.partition_point(|h| h.1 <= at)).filter(|h| h.0 <= at)?;
+        let (sa, sb) = (a.max(ed.line_start(line)), b.min(ed.line_end(line)));
+        let x0 = l.text_x - self.scroll[0];
+        let y = l.origin_y + (line as f32 - self.scroll[1]) * l.line_height;
+        let rect = [x0 + ed.col_of(sa) as f32 * l.advance, y, x0 + ed.col_of(sb) as f32 * l.advance, y + l.line_height];
+        Some((a, b, h, rect))
+    }
+
     fn field_offset(&self, ed: &Editor, f: FieldGeom, x: f32) -> usize {
         let col = ((x - f.text_x) / self.layout.advance).round().max(0.0) as usize;
         ed.offset_at(0, col)

@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 mod edit;
 #[path = "ui_chrome.rs"]
 mod chrome;
+#[path = "ui_hover.rs"]
+mod hover;
 use chrome::glass_card;
 use std::time::{Duration, Instant, SystemTime};
 use winit::event::MouseButton;
@@ -136,6 +138,8 @@ pub struct Ui {
     edit: edit::EditState,
     /// Top bar, status bar and floating cards.
     chrome: chrome::ChromeState,
+    /// Quick-reference popup for the keyword or node under the mouse.
+    hover: hover::HoverState,
     mode: ViewMode,
     split: f32,
     fonts: Option<Fonts>,
@@ -188,6 +192,7 @@ impl Ui {
             show_shortcuts: false,
             edit: edit::EditState::default(),
             chrome: chrome::ChromeState::default(),
+            hover: hover::HoverState::default(),
             fonts: None,
             fonts_dirty: true,
             needs_measure: true,
@@ -1029,6 +1034,9 @@ impl Ui {
     // ---- input -----------------------------------------------------------------
 
     pub fn cursor_moved(&mut self, p: [f32; 2]) {
+        if p != self.cursor {
+            self.hover.moved();
+        }
         self.cursor = p;
         self.menu.motion(p);
         if self.menu.is_open() || self.show_shortcuts {
@@ -1075,12 +1083,14 @@ impl Ui {
     }
 
     pub fn cursor_left(&mut self) {
+        self.hover.hide();
         self.view.hovered = None;
         self.tree.leave();
     }
 
     pub fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
         let p = self.cursor;
+        self.hover.hide();
         if !pressed {
             match self.dragging.take() {
                 Some(Divider::Split) => self.persist_num("view", "split", self.split),
@@ -1205,6 +1215,7 @@ impl Ui {
     /// `lines` > 0 scrolls up / zooms in.
     pub fn wheel(&mut self, lines: f32) {
         let p = self.cursor;
+        self.hover.hide();
         if self.menu.is_open() || self.show_shortcuts {
             return;
         }
@@ -1225,6 +1236,7 @@ impl Ui {
     }
 
     pub fn key(&mut self, key: &Key, text: Option<&str>) {
+        self.hover.hide();
         let input = KeyInput { key, text, mods: self.mods };
         let m = self.mods;
         let ch = match key {
@@ -1431,6 +1443,8 @@ impl Ui {
         if self.show_shortcuts {
             self.draw_shortcuts(shapes, text, fonts, &theme, width, height, dpi);
         }
+        self.update_hover();
+        self.draw_hover(shapes, text, fonts, &theme, [width, height], dpi);
     }
 
     #[allow(clippy::too_many_arguments)]
