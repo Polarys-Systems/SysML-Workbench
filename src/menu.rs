@@ -70,6 +70,20 @@ pub enum Command {
     About,
     /// Model editing from the diagram.
     Model(ModelCommand),
+    /// Show one of the canvases (general view, interconnection, states, tables).
+    Canvas(crate::config::Canvas),
+    /// Show the n-th candidate in the interconnection view.
+    IbdRoot(u16),
+    /// Back to the element shown before in the interconnection view.
+    IbdBack,
+    /// Show the n-th candidate in the state machine view.
+    StateRoot(u16),
+    /// Back to the element shown before in the state machine view.
+    StateBack,
+    /// Write the table shown (requirements, allocation matrix, checks) to a CSV file.
+    ExportCsv,
+    /// Open the n-th other file of the project.
+    OpenProjectFile(u16),
 }
 
 pub enum ItemKind {
@@ -106,6 +120,10 @@ impl Item {
     }
     pub fn enabled(mut self, on: bool) -> Self {
         self.enabled = on;
+        self
+    }
+    pub fn shortcut(mut self, keys: &'static str) -> Self {
+        self.shortcut = keys;
         self
     }
     fn command(&self) -> Option<Command> {

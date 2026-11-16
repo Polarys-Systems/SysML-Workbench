@@ -85,6 +85,16 @@ impl EditState {
     pub(super) fn busy(&self) -> bool {
         self.link.is_some()
     }
+
+    /// Drops the armed tool, the connect drag, the handle and any open field
+    /// (another view takes the canvas).
+    pub(super) fn reset_tools(&mut self) {
+        self.place = None;
+        self.link = None;
+        self.handle = None;
+        self.field = None;
+        self.right_press = None;
+    }
 }
 
 impl Ui {
@@ -333,6 +343,9 @@ impl Ui {
             return;
         };
         self.view.selected = Some(node);
+        if self.refuse_external(node) {
+            return;
+        }
         let n = &self.doc.diagram.nodes[node];
         let qname = n.qualified_name.clone();
         let (is_def, kind) = (n.is_def, n.kind);
@@ -474,6 +487,16 @@ impl Ui {
         }
     }
 
+    /// A node from another file cannot be edited through this file's text:
+    /// says so and returns true for such a node.
+    fn refuse_external(&mut self, node: usize) -> bool {
+        let Some(n) = self.doc.diagram.nodes.get(node) else { return false };
+        let Some(file) = n.external.clone() else { return false };
+        let name = n.name.clone();
+        self.notify(format!("{name} is declared in {file}: open that file to edit it"));
+        true
+    }
+
     fn span_at(&self, offset: usize) -> Option<sysml::Span> {
         self.doc.elements.iter().find(|e| e.span.start == offset).map(|e| e.span)
     }
@@ -528,6 +551,9 @@ impl Ui {
             return true;
         }
         let Some(name) = self.selected_name() else { return false };
+        if matches!(key, Key::Named(NamedKey::Delete | NamedKey::F2)) && self.view.selected.is_some_and(|n| self.refuse_external(n)) {
+            return true;
+        }
         match key {
             Key::Named(NamedKey::Delete) => {
                 self.delete_node(&name);
@@ -598,6 +624,9 @@ impl Ui {
             self.ensure_parsed();
             let world = self.view.to_world(p, pane, self.dpi);
             if let Some(node) = self.view.node_at(&self.doc.diagram, world) {
+                if self.refuse_external(node) {
+                    return true;
+                }
                 let n = &self.doc.diagram.nodes[node];
                 let name = n.qualified_name.clone();
                 if let Some(line) = self.doc.diagram.line_at(node, world, &self.config.diagram) {
@@ -627,6 +656,7 @@ impl Ui {
             if let (Some(n), Some(pane)) = (self.view.hovered, self.panes.diagram)
                 && !self.view.is_dragging()
                 && self.edit.place.is_none()
+                && self.doc.diagram.nodes.get(n).is_some_and(|n| n.external.is_none())
             {
                 self.edit.handle = Some((n, self.handle_rect(n, pane)));
             }
@@ -653,6 +683,9 @@ impl Ui {
         let Some(pane) = self.panes.diagram else { return };
         let world = self.view.to_world(p, pane, self.dpi);
         let Some(to) = self.view.node_at(&self.doc.diagram, world).filter(|&t| t != link.from) else { return };
+        if self.refuse_external(to) {
+            return;
+        }
         let relations = model_edit::relations_between(self.info(link.from), self.info(to));
         let names = (self.doc.diagram.nodes[link.from].qualified_name.clone(), self.doc.diagram.nodes[to].qualified_name.clone());
         let items = relations

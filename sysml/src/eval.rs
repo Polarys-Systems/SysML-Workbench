@@ -233,7 +233,6 @@ fn is_comparison(op: BinaryOp) -> bool {
 
 pub struct Evaluator<'a, 'm> {
     index: &'a Index<'m>,
-    entry_of: HashMap<*const Member, EntryId>,
     statics: RefCell<HashMap<EntryId, Rc<Instance<'m>>>>,
     /// Values being worked out (value member, instance path), to catch cycles.
     active: RefCell<HashSet<(usize, String)>>,
@@ -244,10 +243,8 @@ pub struct Evaluator<'a, 'm> {
 
 impl<'a, 'm> Evaluator<'a, 'm> {
     pub fn new(index: &'a Index<'m>) -> Self {
-        let entry_of = index.entries().iter().enumerate().map(|(id, e)| (e.member as *const Member, id)).collect();
         Evaluator {
             index,
-            entry_of,
             statics: RefCell::default(),
             active: RefCell::default(),
             depth: Cell::new(0),
@@ -294,7 +291,7 @@ impl<'a, 'm> Evaluator<'a, 'm> {
         if out.len() >= MAX_LAYERS || out.iter().any(|l| std::ptr::eq(l.member, member)) {
             return;
         }
-        let ns = self.entry_of.get(&(member as *const Member)).copied().or(owner_ns);
+        let ns = self.index.id_of(member).or(owner_ns);
         out.push(Layer { member, ns });
         let types: Vec<&QualifiedName> = match &member.kind {
             MemberKind::Definition(d) => d.specializes.iter().collect(),
@@ -1041,10 +1038,19 @@ pub struct Report {
 
 /// Evaluates every value, package-level instance and `satisfy` in `model`.
 pub fn evaluate(model: &Model, index: &Index) -> Report {
+    evaluate_source(model, index, 0)
+}
+
+/// Like [`evaluate`], for an index over several files ([`Index::build_many`]):
+/// `model` is the one at position `source`, and only its instances are reported.
+pub fn evaluate_source(model: &Model, index: &Index, source: usize) -> Report {
     let ev = Evaluator::new(index);
     let mut report = Report::default();
     ev.walk(&model.members, None, true, &mut report);
     for (id, entry) in index.entries().iter().enumerate() {
+        if entry.source != source {
+            continue;
+        }
         let MemberKind::Usage(u) = &entry.member.kind else { continue };
         let in_package = entry.parent.is_none_or(|p| matches!(index.entry(p).member.kind, MemberKind::Package(_)));
         if !in_package || u.prefix.role.is_some() || matches!(u.kind, UsageKind::Attribute | UsageKind::Enum | UsageKind::Metadata) {
@@ -1098,7 +1104,7 @@ impl<'m> Evaluator<'_, 'm> {
                     }
                 }
             }
-            let id = self.entry_of.get(&(m as *const Member)).copied();
+            let id = self.index.id_of(m);
             let concrete = concrete && !matches!(m.kind, MemberKind::Definition(_));
             self.walk(m.kind.body(), id, concrete, report);
         }

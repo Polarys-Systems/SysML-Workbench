@@ -3,7 +3,7 @@
 //! saving and live reloading of the model and config files.
 
 use crate::code_view::{CodeView, Focus, KeyInput, Mods};
-use crate::config::{self, Config, FontConfig, MAX_RECENT, ViewConfig, ViewMode};
+use crate::config::{self, Canvas, Config, FontConfig, MAX_RECENT, ViewConfig, ViewMode};
 use crate::theme::Theme;
 use crate::diagram::{Diagram, EdgeKind};
 use crate::diagram_view::{DiagramView, Fonts, TextMetrics, contains};
@@ -13,12 +13,18 @@ use crate::menu::{Command, Item, Menu, MenuBar};
 use crate::shapes::{PASS_CHROME, Rect, ShapeRenderer, Transform};
 use crate::text::{TextRenderer, TextStyle};
 use crate::tree_view::{TreeEvent, TreeView};
+use crate::ibd_view::IbdView;
+use crate::state_view::StateView;
 use std::path::{Path, PathBuf};
 
 #[path = "ui_edit.rs"]
 mod edit;
 #[path = "ui_chrome.rs"]
 mod chrome;
+#[path = "ui_reqs.rs"]
+mod reqs;
+#[path = "ui_canvas.rs"]
+mod canvas;
 #[path = "ui_hover.rs"]
 mod hover;
 use chrome::glass_card;
@@ -28,6 +34,8 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::CursorIcon;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
+/// The other files of the project are checked less often (it lists folders).
+const PROJECT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MESSAGE_TIME: Duration = Duration::from_secs(4);
 /// Pause in typing before the model is reparsed and the diagram rebuilt.
 const REPARSE_DELAY: Duration = Duration::from_millis(150);
@@ -64,7 +72,9 @@ const UI_FONTS: [(&str, &str, &str); 7] = [
     ("Bahnschrift", "bahnschrift.ttf", "bahnschrift.ttf"),
 ];
 
-const SHORTCUTS: [(&str, &str); 23] = [
+const SHORTCUTS: [(&str, &str); 25] = [
+    ("Ctrl+1 … Ctrl+7", "General, interconnection, states, requirements, traceability, allocation, checks"),
+    ("Backspace", "Interconnection: back to the previous element"),
     ("Ctrl+N / Ctrl+O", "New / open a model"),
     ("Ctrl+S / Ctrl+Shift+S", "Save / save as"),
     ("Ctrl+E", "Export the diagram as PNG"),
@@ -141,6 +151,17 @@ pub struct Ui {
     /// Quick-reference popup for the keyword or node under the mouse.
     hover: hover::HoverState,
     mode: ViewMode,
+    /// What the canvas shows.
+    canvas: Canvas,
+    ibd: IbdView,
+    states: StateView,
+    reqs: reqs::ReqState,
+    alloc_table: reqs::ReqState,
+    check_table: reqs::ReqState,
+    /// Last click on a non-general canvas, for double clicks.
+    canvas_click: Option<(Instant, [f32; 2])>,
+    /// When the other files of the project were last checked for changes.
+    last_project_poll: Instant,
     split: f32,
     fonts: Option<Fonts>,
     fonts_dirty: bool,
@@ -177,6 +198,14 @@ impl Ui {
         let code = CodeView::new(&doc.source);
         let mut ui = Self {
             mode: config.view.mode,
+            canvas: config.view.canvas,
+            ibd: IbdView::default(),
+            states: StateView::default(),
+            reqs: reqs::ReqState::default(),
+            alloc_table: reqs::ReqState::default(),
+            check_table: reqs::ReqState::default(),
+            canvas_click: None,
+            last_project_poll: Instant::now(),
             split: config.view.split,
             config_modified: config_path.as_deref().and_then(document::modified),
             config,
@@ -373,6 +402,11 @@ impl Ui {
         self.parsed_version = self.code.editor.version();
         self.reparse_at = None;
         self.view = DiagramView::default();
+        self.ibd = IbdView::default();
+        self.states = StateView::default();
+        self.reqs.reset();
+        self.alloc_table.reset();
+        self.check_table.reset();
         self.tree.reset();
         self.marked = None;
         self.needs_measure = true;
@@ -447,11 +481,37 @@ impl Ui {
     /// File > Export Diagram as PNG: asks for the file; the window renders it
     /// before the next frame (see [`Self::draw_export`]).
     fn export_dialog(&mut self) {
-        if self.doc.diagram.nodes.is_empty() {
+        if !self.canvas.is_diagram() {
+            self.export_csv();
+            return;
+        }
+        let empty = match self.canvas {
+            Canvas::Interconnection => {
+                self.ensure_ibd();
+                self.ibd.ibd.is_none()
+            }
+            Canvas::States => {
+                self.ensure_states();
+                self.states.machine.is_none()
+            }
+            _ => self.doc.diagram.nodes.is_empty(),
+        };
+        if empty {
             self.notify("The diagram is empty: nothing to export");
             return;
         }
-        let default = self.doc.path.with_extension("png");
+        let root = match self.canvas {
+            Canvas::Interconnection => self.ibd.current_root(),
+            Canvas::States => self.states.current_root(),
+            _ => None,
+        };
+        let default = match root {
+            Some(root) => {
+                let name = root.rsplit("::").next().unwrap_or(root);
+                self.doc.path.with_file_name(format!("{}-{name}.png", self.doc.path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default()))
+            }
+            _ => self.doc.path.with_extension("png"),
+        };
         // Without a file dialog the image goes next to the model.
         let path = if dialog::HAS_PICKERS {
             let Some(path) = dialog::save_png(self.owner, Some(&default)) else { return };
@@ -460,6 +520,44 @@ impl Ui {
             default
         };
         self.export_request = Some(path);
+    }
+
+    /// File > Export Requirements as CSV.
+    fn export_csv(&mut self) {
+        let (title, suffix, count) = self.csv_table();
+        if count == 0 {
+            self.notify(format!("There is nothing in the {} to export", title.to_lowercase()));
+            return;
+        }
+        let default = self.doc.path.with_file_name(format!(
+            "{}-{suffix}.csv",
+            self.doc.path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default()
+        ));
+        let path = if dialog::HAS_PICKERS {
+            let Some(path) = dialog::save_csv(self.owner, Some(&default)) else { return };
+            path
+        } else {
+            default
+        };
+        // A byte order mark lets spreadsheet programs read the file as UTF-8.
+        let csv = match self.canvas {
+            Canvas::Allocation => self.doc.allocations.to_csv(),
+            Canvas::Checks => crate::checks::to_csv(&self.doc.checks),
+            _ => self.doc.requirements.to_csv(),
+        };
+        match std::fs::write(&path, format!("\u{feff}{csv}")) {
+            Ok(()) => self.notify(format!("Exported {count} rows of the {} to {}", title.to_lowercase(), path.display())),
+            Err(e) => self.notify(format!("Could not export {}: {e}", path.display())),
+        }
+    }
+
+    /// The table Ctrl+E writes as CSV from this canvas: title, file name suffix, rows.
+    fn csv_table(&self) -> (&'static str, &'static str, usize) {
+        match self.canvas {
+            Canvas::Allocation => ("Allocation Matrix", "allocation", self.doc.allocations.rows.len()),
+            Canvas::Checks => ("Checks", "checks", self.doc.checks.len()),
+            _ => ("Requirements", "requirements", self.doc.requirements.rows.len()),
+        }
     }
 
     /// Exports to `path` before the next frame (for `--export-png`).
@@ -477,7 +575,11 @@ impl Ui {
     pub fn draw_export(&mut self, shapes: &mut ShapeRenderer, text: &mut TextRenderer, max_side: u32) -> Option<[u32; 2]> {
         self.prepare_fonts_and_layout(text);
         let fonts = self.fonts?;
-        let b = self.doc.diagram.bounds()?;
+        let b = match self.canvas {
+            Canvas::Interconnection => self.ibd.ibd.as_ref()?.bounds()?,
+            Canvas::States => self.states.machine.as_ref()?.bounds()?,
+            _ => self.doc.diagram.bounds()?,
+        };
         let (w, h) = (b[2] - b[0] + 2.0 * EXPORT_MARGIN, b[3] - b[1] + 2.0 * EXPORT_MARGIN);
         let max = max_side as f32;
         let scale = EXPORT_SCALE.min(max / w).min(max / h).min((EXPORT_MAX_PIXELS / (w * h)).sqrt());
@@ -489,7 +591,22 @@ impl Ui {
         let mut cfg = self.config.diagram.clone();
         cfg.grid = false;
         let pane = [0.0, 0.0, size[0] as f32, size[1] as f32];
-        view.draw(&self.doc.diagram, shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
+        if self.canvas == Canvas::Interconnection {
+            // Draw with a camera of its own and no selection.
+            let camera = std::mem::replace(&mut self.ibd.camera, view);
+            let (sel, hov) = (self.ibd.selected.take(), self.ibd.hovered.take());
+            self.ibd.draw(shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
+            self.ibd.camera = camera;
+            (self.ibd.selected, self.ibd.hovered) = (sel, hov);
+        } else if self.canvas == Canvas::States {
+            let camera = std::mem::replace(&mut self.states.camera, view);
+            let (sel, hov) = (self.states.selected.take(), self.states.hovered.take());
+            self.states.draw(shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
+            self.states.camera = camera;
+            (self.states.selected, self.states.hovered) = (sel, hov);
+        } else {
+            view.draw(&self.doc.diagram, shapes, text, fonts, &cfg, &self.config.theme, pane, 1.0);
+        }
         text.set_clip(None);
         Some(size)
     }
@@ -563,6 +680,19 @@ impl Ui {
         self.last_poll = Instant::now();
         if self.config_path.as_deref().and_then(document::modified) != self.config_modified {
             self.reload_config();
+        }
+        if self.last_project_poll.elapsed() >= PROJECT_POLL_INTERVAL {
+            self.last_project_poll = Instant::now();
+            if self.doc.refresh_project() {
+                // Names from other files may now resolve differently: reparse.
+                let selected = self.selected_name();
+                self.doc.set_source(self.code.editor.text());
+                self.parsed_version = self.code.editor.version();
+                self.view.selected = selected.and_then(|n| self.doc.diagram.node_named(&n));
+                self.view.hovered = None;
+                self.needs_measure = true;
+                self.notify(format!("Project files reloaded ({} other files)", self.doc.project.len()));
+            }
         }
         if self.doc.changed_on_disk() {
             if self.modified() {
@@ -662,17 +792,45 @@ impl Ui {
                     .flatten(),
             )
             .collect();
+        let dir = self.doc.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let project: Vec<Item> = self
+            .doc
+            .project
+            .iter()
+            .take(60)
+            .enumerate()
+            .map(|(i, f)| {
+                let rel = f.path.strip_prefix(&dir).unwrap_or(&f.path).to_string_lossy().into_owned();
+                let label = if f.has_errors { format!("{rel}    (syntax errors)") } else { rel };
+                Item::action(label, "", Command::OpenProjectFile(i as u16))
+            })
+            .collect();
         let file = vec![
             Item::action("New", "Ctrl+N", Command::New),
             Item::action("Open…", "Ctrl+O", Command::Open).enabled(dialog::HAS_PICKERS),
             Item::submenu("Open Recent", recent),
+            Item::submenu("Open Project File", project),
             Item::separator(),
             Item::action("Save", "Ctrl+S", Command::Save),
             Item::action("Save As…", "Ctrl+Shift+S", Command::SaveAs).enabled(dialog::HAS_PICKERS),
             Item::action("Reload from Disk", "F5", Command::Reload).enabled(!self.doc.untitled),
             Item::separator(),
-            Item::action("Export Diagram as PNG…", "Ctrl+E", Command::ExportPng)
-                .enabled(!self.doc.diagram.nodes.is_empty()),
+            Item::action(
+                match self.canvas {
+                    Canvas::Interconnection => "Export Interconnection as PNG…",
+                    Canvas::States => "Export State Machine as PNG…",
+                    _ => "Export Diagram as PNG…",
+                },
+                if self.canvas.is_diagram() { "Ctrl+E" } else { "" },
+                Command::ExportPng,
+            )
+            .enabled(match self.canvas {
+                Canvas::Interconnection => self.ibd.ibd.is_some(),
+                Canvas::States => self.states.machine.is_some(),
+                _ => !self.doc.diagram.nodes.is_empty(),
+            }),
+            Item::action(format!("Export {} as CSV…", self.csv_table().0), if self.canvas.is_diagram() { "" } else { "Ctrl+E" }, Command::ExportCsv)
+                .enabled(self.csv_table().2 > 0),
             Item::separator(),
             Item::action("Close", "Ctrl+W", Command::Close),
             Item::action("Exit", "Alt+F4", Command::Exit),
@@ -693,7 +851,9 @@ impl Ui {
             Item::action("Format Document", "Shift+Alt+F", Command::Format),
             Item::action("Toggle Line Comment", "Ctrl+/", Command::ToggleComment),
         ];
-        let view = vec![
+        let mut view = self.canvas_items();
+        view.push(Item::separator());
+        view.extend([
             Item::radio("Split: Code and Diagram", Command::Mode(ViewMode::Split), self.mode == ViewMode::Split),
             Item::radio("Diagram Only", Command::Mode(ViewMode::Diagram), self.mode == ViewMode::Diagram),
             Item::radio("Code Only", Command::Mode(ViewMode::Outline), self.mode == ViewMode::Outline),
@@ -707,7 +867,7 @@ impl Ui {
             Item::action("Fit Diagram", "F", Command::Fit).enabled(diagram),
             Item::separator(),
             Item::check("Frame Time", "", Command::ToggleFrameTime, v.show_frame_time),
-        ];
+        ]);
         let e = &d.edges;
         let edges = vec![
             Item::check("Specialization", "", Command::ToggleEdge(EdgeKind::Specialization), e.specialization),
@@ -727,7 +887,12 @@ impl Ui {
             Item::check("Computed Values", "", Command::ToggleValues, d.values),
             Item::submenu("Relationships Shown", edges),
             Item::separator(),
-            Item::action("Restore Automatic Layout", "L", Command::ResetLayout),
+            Item::action("Restore Automatic Layout", "L", Command::ResetLayout).enabled(self.canvas == Canvas::General),
+            Item::separator(),
+            Item::submenu("Interconnection: Show Element", self.ibd_menu_items()),
+            Item::action("Interconnection: Back", "Backspace", Command::IbdBack).enabled(!self.ibd.back.is_empty()),
+            Item::submenu("States: Show Element", self.state_menu_items()),
+            Item::action("States: Back", "Backspace", Command::StateBack).enabled(!self.states.back.is_empty()),
         ];
 
         let themes: Vec<Item> = config::theme_names(self.config_path.as_deref())
@@ -807,11 +972,21 @@ impl Ui {
         }
     }
 
+    /// The camera of the diagram canvas shown.
+    fn camera_mut(&mut self) -> &mut DiagramView {
+        match self.canvas {
+            Canvas::Interconnection => &mut self.ibd.camera,
+            Canvas::States => &mut self.states.camera,
+            _ => &mut self.view,
+        }
+    }
+
     fn zoom_center(&mut self, factor: f32) {
         if let Some(pane) = self.panes.diagram {
             let a = self.view.focus_in(pane);
             let c = [(a[0] + a[2]) * 0.5, (a[1] + a[3]) * 0.5];
-            self.view.zoom_at(c, factor, pane, self.dpi, &self.config.diagram);
+            let (dpi, cfg) = (self.dpi, self.config.diagram.clone());
+            self.camera_mut().zoom_at(c, factor, pane, dpi, &cfg);
         }
     }
 
@@ -922,7 +1097,7 @@ impl Ui {
             }
             Command::ZoomIn => self.zoom_center(1.25),
             Command::ZoomOut => self.zoom_center(0.8),
-            Command::Fit => self.view.needs_fit = true,
+            Command::Fit => self.camera_mut().needs_fit = true,
             Command::ToggleGrid => {
                 self.config.diagram.grid = !self.config.diagram.grid;
                 self.persist_bool("diagram", "grid", self.config.diagram.grid);
@@ -1028,6 +1203,32 @@ impl Ui {
                 " — a SysML v2 editor and viewer, rendered with Vulkan"
             )),
             Command::Model(m) => self.run_model(m),
+            Command::Canvas(c) => {
+                self.set_canvas(c);
+                if self.mode == ViewMode::Outline {
+                    self.set_mode(ViewMode::Split);
+                }
+            }
+            Command::IbdRoot(i) => {
+                if let Some(q) = self.ibd.candidates.get(usize::from(i)).cloned() {
+                    self.set_canvas(Canvas::Interconnection);
+                    self.set_ibd_root(Some(q), true);
+                }
+            }
+            Command::IbdBack => self.ibd_back(),
+            Command::StateRoot(i) => {
+                if let Some(q) = self.states.candidates.get(usize::from(i)).cloned() {
+                    self.set_canvas(Canvas::States);
+                    self.set_state_root(Some(q), true);
+                }
+            }
+            Command::StateBack => self.state_back(),
+            Command::ExportCsv => self.export_csv(),
+            Command::OpenProjectFile(i) => {
+                if let Some(p) = self.doc.project.get(usize::from(i)).map(|f| f.path.clone()) {
+                    self.open(p);
+                }
+            }
         }
     }
 
@@ -1067,6 +1268,10 @@ impl Ui {
         } else {
             self.tree.leave();
         }
+        if self.canvas != Canvas::General {
+            self.canvas_motion(p);
+            return;
+        }
         if self.edit.busy() {
             self.edit_motion(p);
             return;
@@ -1085,6 +1290,8 @@ impl Ui {
     pub fn cursor_left(&mut self) {
         self.hover.hide();
         self.view.hovered = None;
+        self.ibd.hovered = None;
+        self.states.hovered = None;
         self.tree.leave();
     }
 
@@ -1098,10 +1305,12 @@ impl Ui {
                 None => {}
             }
             self.code.release();
+            self.ibd.camera.release();
+            self.states.camera.release();
             if self.view.release() {
                 self.save_positions();
             }
-            if matches!(button, MouseButton::Left | MouseButton::Right) {
+            if self.canvas == Canvas::General && matches!(button, MouseButton::Left | MouseButton::Right) {
                 self.edit_release(button == MouseButton::Left, p);
             }
             return;
@@ -1152,6 +1361,14 @@ impl Ui {
             }
             None => {}
         }
+        if self.canvas != Canvas::General {
+            if self.panes.diagram.is_some_and(|r| contains(r, p)) {
+                self.code.active = false;
+                self.tree.active = false;
+                self.canvas_press(button, p);
+            }
+            return;
+        }
         if matches!(button, MouseButton::Left | MouseButton::Right) && self.edit_press(left, p) {
             self.code.active = false;
             self.tree.active = false;
@@ -1190,7 +1407,8 @@ impl Ui {
         self.code.active = false;
         let node = name.as_deref().and_then(|q| self.doc.diagram.node_for(q));
         self.view.selected = node;
-        self.marked = self.selected_name();
+        self.focus_canvas_on(name.as_deref());
+        self.marked = self.focus_name();
         self.code.mark_offset(Some(offset), true);
         if let (Some(n), Some(pane)) = (node, self.panes.diagram) {
             self.view.center_on_point(self.doc.diagram.nodes[n].center(), pane, self.dpi);
@@ -1200,9 +1418,11 @@ impl Ui {
     /// Selects the diagram node and tree row for the element under the text cursor.
     fn select_at_cursor(&mut self) {
         let head = self.code.editor.primary().head;
-        let node = self.doc.element_at(head).and_then(|q| self.doc.diagram.node_for(q));
+        let element = self.doc.element_at(head).map(str::to_owned);
+        let node = element.as_deref().and_then(|q| self.doc.diagram.node_for(q));
         self.view.selected = node;
-        self.marked = self.selected_name();
+        self.focus_canvas_on(element.as_deref());
+        self.marked = self.focus_name();
         self.code.mark_offset(self.marked.as_deref().and_then(|n| self.doc.offset_of(n)), false);
         if let (Some(n), Some(pane)) = (node, self.panes.diagram) {
             self.view.center_on_point(self.doc.diagram.nodes[n].center(), pane, self.dpi);
@@ -1225,6 +1445,7 @@ impl Ui {
                 self.tree.motion(p);
             }
             Some(chrome::Card::Code) => self.code.wheel(lines, self.mods.shift),
+            None if self.canvas != Canvas::General => self.canvas_wheel(lines, p),
             None if self.over_chrome(p) => {}
             None => {
                 if let Some(pane) = self.panes.diagram.filter(|&r| contains(r, p)) {
@@ -1281,6 +1502,13 @@ impl Ui {
                 "=" | "+" => Some(Command::CodeSize(1)),
                 "-" => Some(Command::CodeSize(-1)),
                 "0" => Some(Command::ResetSizes),
+                "1" => Some(Command::Canvas(Canvas::General)),
+                "2" => Some(Command::Canvas(Canvas::Interconnection)),
+                "3" => Some(Command::Canvas(Canvas::States)),
+                "4" => Some(Command::Canvas(Canvas::Requirements)),
+                "5" => Some(Command::Canvas(Canvas::Traceability)),
+                "6" => Some(Command::Canvas(Canvas::Allocation)),
+                "7" => Some(Command::Canvas(Canvas::Checks)),
                 _ => None,
             };
             if let Some(cmd) = cmd {
@@ -1332,6 +1560,12 @@ impl Ui {
     }
 
     fn diagram_key(&mut self, key: &Key) {
+        if self.canvas != Canvas::General {
+            if !self.canvas_key(key) && *key == Key::Named(NamedKey::Tab) && !self.mods.ctrl {
+                self.mode = self.mode.next();
+            }
+            return;
+        }
         if self.diagram_edit_key(key) {
             return;
         }
@@ -1382,6 +1616,17 @@ impl Ui {
             {
                 self.view.selected = None;
             }
+            self.ibd.needs_layout = true;
+            self.states.needs_layout = true;
+        }
+        // The interconnection view follows the model (its candidates feed the menus).
+        self.ensure_ibd();
+        if let (true, Some(fonts)) = (self.ibd.needs_layout, self.fonts) {
+            self.ibd.measure(text, fonts, &self.config.diagram, &self.config.theme);
+        }
+        self.ensure_states();
+        if let (true, Some(fonts)) = (self.states.needs_layout, self.fonts) {
+            self.states.measure(text, fonts, &self.config.diagram, &self.config.theme);
         }
     }
 
@@ -1396,7 +1641,7 @@ impl Ui {
             self.notify(n);
         }
         // Keep the code pane's marked line on the selected element as the text changes.
-        let selected = self.selected_name();
+        let selected = self.focus_name();
         if selected != self.marked {
             self.marked = selected.clone();
             let offset = selected.as_deref().and_then(|n| self.doc.offset_of(n));
@@ -1423,13 +1668,21 @@ impl Ui {
             }
         }
         if let Some(pane) = self.panes.diagram {
-            self.view.draw(&self.doc.diagram, shapes, text, fonts, &self.config.diagram, &theme, pane, dpi);
+            match self.canvas {
+                Canvas::General => self.view.draw(&self.doc.diagram, shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
+                Canvas::Interconnection => self.ibd.draw(shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
+                Canvas::States => self.states.draw(shapes, text, fonts, &self.config.diagram, &theme, pane, dpi),
+                _ => {}
+            }
         }
         text.set_clip(None);
 
         // ---- chrome: cards, floating controls, bars ----
         shapes.begin_pass(PASS_CHROME);
         text.begin_pass(PASS_CHROME);
+        if !self.canvas.is_diagram() && self.panes.diagram.is_some() {
+            self.draw_requirements(shapes, text, fonts, &theme, dpi);
+        }
         self.draw_cards(shapes, text, fonts, &theme, dpi);
         self.draw_diagram_controls(shapes, text, fonts, &theme, dpi);
         self.draw_status_bar(shapes, text, fonts, &theme, dpi);
@@ -1437,7 +1690,9 @@ impl Ui {
 
         // Diagram editing aids (the inline field goes to the overlay pass),
         // then the menus and the shortcuts sheet on top of everything.
-        self.draw_edit_overlay(shapes, text, fonts, &theme, dpi);
+        if self.canvas == Canvas::General {
+            self.draw_edit_overlay(shapes, text, fonts, &theme, dpi);
+        }
         shapes.begin_layer(Transform::IDENTITY, None);
         self.menu.draw(shapes, text, fonts, self.config.view.ui_font_size, &theme, menu_strip, [width, height], dpi);
         if self.show_shortcuts {

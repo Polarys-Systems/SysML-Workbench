@@ -29,6 +29,69 @@ impl ViewMode {
     }
 }
 
+/// What the canvas shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Canvas {
+    /// Definitions, usages and their relationships.
+    #[default]
+    General,
+    /// Parts nested in one element, with ports and connections.
+    Interconnection,
+    /// The states and transitions of one state machine.
+    States,
+    /// The requirements table.
+    Requirements,
+    /// Requirements against what satisfies, verifies or depends on them.
+    Traceability,
+    /// Actions and states against the parts that perform or are allocated them.
+    Allocation,
+    /// Model checks: unconnected ports, untraced requirements, ...
+    Checks,
+}
+
+impl Canvas {
+    pub const ALL: [Canvas; 7] = [
+        Canvas::General,
+        Canvas::Interconnection,
+        Canvas::States,
+        Canvas::Requirements,
+        Canvas::Traceability,
+        Canvas::Allocation,
+        Canvas::Checks,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Canvas::General => "General",
+            Canvas::Interconnection => "Interconnection",
+            Canvas::States => "States",
+            Canvas::Requirements => "Requirements",
+            Canvas::Traceability => "Traceability",
+            Canvas::Allocation => "Allocation",
+            Canvas::Checks => "Checks",
+        }
+    }
+
+    /// The value written in the config file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Canvas::General => "general",
+            Canvas::Interconnection => "interconnection",
+            Canvas::States => "states",
+            Canvas::Requirements => "requirements",
+            Canvas::Traceability => "traceability",
+            Canvas::Allocation => "allocation",
+            Canvas::Checks => "checks",
+        }
+    }
+
+    /// Diagrams (drawn on the zoomable canvas) rather than tables.
+    pub fn is_diagram(self) -> bool {
+        matches!(self, Canvas::General | Canvas::Interconnection | Canvas::States)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -44,6 +107,8 @@ pub struct Config {
 pub struct ViewConfig {
     /// `"split"`, `"diagram"` or `"outline"`.
     pub mode: ViewMode,
+    /// `"general"`, `"interconnection"`, `"requirements"` or `"traceability"`.
+    pub canvas: Canvas,
     /// Outline width as a fraction of the window in split mode.
     pub split: f32,
     pub outline_font_size: f32,
@@ -67,6 +132,7 @@ impl Default for ViewConfig {
     fn default() -> Self {
         Self {
             mode: ViewMode::Split,
+            canvas: Canvas::General,
             split: 0.34,
             outline_font_size: 14.0,
             title_font_size: 20.0,

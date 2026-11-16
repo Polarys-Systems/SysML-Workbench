@@ -101,8 +101,13 @@ impl DiagramView {
 
     /// Zooms and pans so the whole diagram fits the pane.
     pub fn fit(&mut self, diagram: &Diagram, pane: Rect, dpi: f32, cfg: &DiagramConfig) {
+        self.fit_bounds(diagram.bounds(), pane, dpi, cfg);
+    }
+
+    /// Zooms and pans so `bounds` (diagram units) fits the pane.
+    pub fn fit_bounds(&mut self, bounds: Option<Rect>, pane: Rect, dpi: f32, cfg: &DiagramConfig) {
         self.needs_fit = false;
-        let Some(b) = diagram.bounds() else {
+        let Some(b) = bounds else {
             self.zoom = 1.0;
             self.center_on_point([0.0, 0.0], pane, dpi);
             return;
@@ -144,6 +149,24 @@ impl DiagramView {
             return Some(s);
         }
         diagram.nodes.iter().rposition(|n| contains(n.rect(), world))
+    }
+
+    /// Starts panning from screen point `p`.
+    pub fn press_pan(&mut self, p: [f32; 2]) {
+        self.drag = Some(Drag::Pan { last: p });
+    }
+
+    /// Pans while a pan drag is in progress; false when there is none.
+    pub fn pan_motion(&mut self, p: [f32; 2]) -> bool {
+        match &mut self.drag {
+            Some(Drag::Pan { last }) => {
+                self.pan[0] += p[0] - last[0];
+                self.pan[1] += p[1] - last[1];
+                *last = p;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn press(&mut self, diagram: &Diagram, p: [f32; 2], pane: Rect, dpi: f32, pan_only: bool) {
@@ -269,7 +292,8 @@ impl DiagramView {
             };
             // Card: the border and header color fill it all, then the body covers
             // everything below the header (square on top, rounded at the bottom).
-            shapes.bordered_rect(r, colors.header.0, border, radius, width);
+            let header = if node.external.is_some() { colors.header.alpha(0.45) } else { colors.header.0 };
+            shapes.bordered_rect(r, header, border, radius, width);
             if let Some(sep) = layout.separator_y {
                 let inset = width.max(1.0 / s);
                 let top = r[1] + sep;
@@ -311,7 +335,8 @@ impl DiagramView {
             // Name, left-aligned, stopping before the pill.
             text.set_clip(Some(intersect(pane, [x0 + pad * 0.5 * s, y0, to_screen([px - PILL_GAP * 0.5, 0.0])[0], y1])));
             let nm = to_screen([r[0] + pad, r[1] + layout.name_y]);
-            text.draw(TextStyle::new(fonts.title, size(TextRole::Name), theme.node.name.0), nm, &node.name);
+            let name_color = if node.external.is_some() { theme.text_muted.0 } else { theme.node.name.0 };
+            text.draw(TextStyle::new(fonts.title, size(TextRole::Name), name_color), nm, &node.name);
             // Kind label, centered in its pill.
             let kw_h = layout.pill_h - 2.0 * PILL_PAD[1];
             text.set_clip(Some(intersect(pane, [x0, y0, x1 - pad * 0.5 * s, y1])));
@@ -364,7 +389,7 @@ impl DiagramView {
         text.set_clip(None);
     }
 
-    fn draw_grid(&self, shapes: &mut ShapeRenderer, cfg: &DiagramConfig, theme: &Theme, pane: Rect, dpi: f32) {
+    pub fn draw_grid(&self, shapes: &mut ShapeRenderer, cfg: &DiagramConfig, theme: &Theme, pane: Rect, dpi: f32) {
         let s = self.zoom * dpi;
         let [x0, y0] = self.to_world([pane[0], pane[1]], pane, dpi);
         let [x1, y1] = self.to_world([pane[2], pane[3]], pane, dpi);

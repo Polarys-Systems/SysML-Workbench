@@ -52,6 +52,9 @@ pub struct Node {
     pub values: Vec<(String, Tone)>,
     /// For a requirement: the worst verdict of the `satisfy` relationships checking it.
     pub verdict: Option<Verdict>,
+    /// Declared in another file of the project (its name): shown because
+    /// this file refers to it, but not editable here.
+    pub external: Option<String>,
 }
 
 impl Node {
@@ -171,14 +174,52 @@ impl Diagram {
         }
     }
 
+    #[cfg(test)]
     pub fn build(model: &Model) -> Self {
-        let index = Index::build(model);
+        Self::build_in(&Index::build(model), model, &|_| None)
+    }
+
+    /// The diagram of `model`, entry source 0 of `index`. Definitions of other
+    /// files that it specializes, is typed by or composes show as read-only
+    /// nodes when `file_of` names their file (`None`: a library, left out).
+    pub fn build_in(index: &Index, model: &Model, file_of: &dyn Fn(usize) -> Option<String>) -> Self {
         let mut d = Diagram::default();
         let mut node_of: Vec<Option<usize>> = vec![None; index.entries().len()];
 
+        // Other files' definitions this file builds on.
+        let mut external: Vec<(EntryId, String)> = Vec::new();
         for (id, entry) in index.entries().iter().enumerate() {
-            let Some((keyword, style)) = node_kind(&index, id) else { continue };
-            let (lines, line_spans) = entry
+            if entry.source != 0 || node_kind(index, id).is_none() {
+                continue;
+            }
+            let mut targets = Vec::new();
+            match &entry.member.kind {
+                MemberKind::Definition(def) => targets.extend(def.specializes.iter().filter_map(|b| index.resolve(entry.parent, b))),
+                MemberKind::Usage(u) => targets.extend(u.typed_by.iter().filter_map(|t| index.resolve(entry.parent, &t.name))),
+                _ => {}
+            }
+            for child in entry.member.kind.body() {
+                if let MemberKind::Usage(u) = &child.kind {
+                    targets.extend(u.typed_by.iter().filter_map(|t| index.resolve(Some(id), &t.name)));
+                }
+            }
+            for t in targets {
+                let source = index.entry(t).source;
+                if source != 0 && !external.iter().any(|(e, _)| *e == t) && node_kind(index, t).is_some() && let Some(file) = file_of(source) {
+                    external.push((t, file));
+                }
+            }
+        }
+
+        let local = index.entries().iter().enumerate().filter(|(_, e)| e.source == 0).map(|(id, _)| (id, None));
+        let ghosts: Vec<(EntryId, Option<String>)> = external.into_iter().map(|(id, f)| (id, Some(f))).collect();
+        for (id, file) in local.chain(ghosts) {
+            let entry = index.entry(id);
+            let Some((keyword, style)) = node_kind(index, id) else { continue };
+            let (lines, line_spans): (Vec<String>, Vec<Span>) = if file.is_some() {
+                (Vec::new(), Vec::new())
+            } else {
+                entry
                 .member
                 .kind
                 .body()
@@ -189,7 +230,8 @@ impl Diagram {
                     }
                     _ => None,
                 })
-                .unzip();
+                .unzip()
+            };
             let (is_def, kind) = match &entry.member.kind {
                 MemberKind::Definition(def) => (true, def.kind.usage_kind()),
                 MemberKind::Usage(u) => (false, u.kind),
@@ -207,13 +249,15 @@ impl Diagram {
                 size: [0.0, 0.0],
                 title_widths: [0.0, 0.0],
                 pinned: false,
-                span: entry.member.span,
+                // Spans of other files mean nothing in this one.
+                span: if file.is_some() { Span::default() } else { entry.member.span },
                 line_spans,
                 is_def,
                 kind,
                 rows: [0.0; 4],
-                values: Vec::new(),
+                values: file.iter().map(|f| (format!("from {f}"), Tone::Muted)).collect(),
                 verdict: None,
+                external: file,
             });
         }
 
@@ -275,8 +319,6 @@ impl Diagram {
         }
 
         // `satisfy` and `dependency` members can sit anywhere, named or not.
-        let entry_of: HashMap<*const Member, EntryId> =
-            index.entries().iter().enumerate().map(|(id, e)| (e.member as *const Member, id)).collect();
         let mut stack: Vec<(&[Member], Option<EntryId>)> = vec![(&model.members, None)];
         while let Some((members, scope)) = stack.pop() {
             for m in members {
@@ -321,7 +363,7 @@ impl Diagram {
                     }
                     _ => {}
                 }
-                let inner = entry_of.get(&(m as *const Member)).copied().or(scope);
+                let inner = index.id_of(m).or(scope);
                 stack.push((m.kind.body(), inner));
             }
         }

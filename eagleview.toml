@@ -15,6 +15,7 @@ title_font_size = 20
 status_font_size = 12.5
 show_frame_time = true
 max_diagnostics = 4
+canvas = "general"
 
 [diagram]
 font_size = 13

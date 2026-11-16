@@ -159,3 +159,43 @@ fn sample_model_explains_missing_values() {
     let total = drone1.values.iter().find(|v| v.name == "totalMass").unwrap();
     assert_eq!(total.status, Status::Unknown);
 }
+
+/// Bundling the standard library must not change what the sample computes.
+#[test]
+fn library_leaves_sample_values_unchanged() {
+    let src = include_str!("data/drone.sysml");
+    let model = sysml::parse(src).model;
+    let alone = sysml::eval::evaluate(&model, &sysml::Index::build(&model));
+    let mut models = vec![&model];
+    models.extend(sysml::library::files().iter().map(|f| &f.model));
+    let index = sysml::Index::build_many(&models);
+    let with_lib = sysml::eval::evaluate_source(&model, &index, 0);
+    let notes = |r: &sysml::eval::Report| r.notes.iter().map(|n| (n.span, n.text.clone())).collect::<Vec<_>>();
+    assert_eq!(notes(&alone), notes(&with_lib));
+    let verdicts = |r: &sysml::eval::Report| r.checks.iter().map(|c| (c.verdict, c.detail.clone())).collect::<Vec<_>>();
+    assert_eq!(verdicts(&alone), verdicts(&with_lib));
+    assert_eq!(alone.diagnostics.len(), with_lib.diagnostics.len());
+}
+
+/// Where a part's multiplicity and a redefined value can come from, in the
+/// sample's shape: the motor mass set on the definition, on the usage in
+/// `Drone`, or on the instance.
+#[test]
+fn sample_rolls_up_once_motor_mass_is_given() {
+    let cases = [
+        ("part def Motor :> Component {", "part def Motor :> Component { :>> mass = 0.3 [kg];"),
+        ("part motors : Motor [4] ordered;", "part motors : Motor [4] ordered { :>> mass = 0.3 [kg]; }"),
+        (":>> battery {", ":>> motors { :>> mass = 0.3 [kg]; }\n        :>> battery {"),
+    ];
+    for (from, to) in cases {
+        let src = DRONE.replacen(from, to, 1);
+        assert_ne!(src, DRONE, "{from}");
+        let model = parse(&src).model;
+        let index = Index::build(&model);
+        let ev = Evaluator::new(&index);
+        assert_eq!(ev.value_of("DroneSystem::drone1", &["totalMass"]).map(|v| v.to_string()), Ok("2.4 kg".into()), "{to}");
+        let r = evaluate(&model, &index);
+        let check = r.checks.iter().find(|c| c.requirement == "DroneSystem::massReq").unwrap();
+        assert_eq!(check.verdict, Verdict::Satisfied, "{to}: {}", check.detail);
+    }
+}

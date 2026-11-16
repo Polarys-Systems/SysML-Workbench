@@ -101,6 +101,7 @@ mod imp {
     const SYSML: [&str; 4] = ["SysML files (*.sysml)", "*.sysml", "All files (*.*)", "*.*"];
     const FONTS: [&str; 4] = ["Fonts (*.ttf, *.otf, *.ttc)", "*.ttf;*.otf;*.ttc", "All files (*.*)", "*.*"];
     const PNG: [&str; 2] = ["PNG images (*.png)", "*.png"];
+    const CSV: [&str; 2] = ["CSV files (*.csv)", "*.csv"];
 
     fn run(owner: Owner, title: &str, initial: Option<&Path>, save: bool, parts: &[&str], def_ext: &str) -> Option<PathBuf> {
         let mut buffer = vec![0u16; 4096];
@@ -173,6 +174,10 @@ mod imp {
         run(owner, "Export diagram as PNG", initial, true, &PNG, "png")
     }
 
+    pub fn save_csv(owner: Owner, initial: Option<&Path>) -> Option<PathBuf> {
+        run(owner, "Export requirements as CSV", initial, true, &CSV, "csv")
+    }
+
     pub fn ask_save(owner: Owner, file: &str) -> SaveChoice {
         let text = wide(format!("Save changes to {file}?"));
         let caption = wide("EagleView");
@@ -213,6 +218,9 @@ mod imp {
     pub fn save_png(_: Owner, _: Option<&Path>) -> Option<PathBuf> {
         None
     }
+    pub fn save_csv(_: Owner, _: Option<&Path>) -> Option<PathBuf> {
+        None
+    }
     pub fn ask_save(_: Owner, _: &str) -> SaveChoice {
         SaveChoice::Discard
     }
@@ -221,7 +229,7 @@ mod imp {
     }
 }
 
-pub use imp::{ask_save, open_external, open_file, pick_font, save_file, save_png};
+pub use imp::{ask_save, open_external, open_file, pick_font, save_csv, save_file, save_png};
 
 /// Whether the native pickers exist on this platform.
 pub const HAS_PICKERS: bool = cfg!(windows);

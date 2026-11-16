@@ -32,6 +32,7 @@ mod display;
 pub mod eval;
 pub mod index;
 pub mod lexer;
+pub mod library;
 mod parser;
 pub mod span;
 mod summary;

@@ -565,8 +565,9 @@ impl<'s> Parser<'s> {
             "viewpoint" => U::Viewpoint,
             "rendering" => U::Rendering,
             "metadata" => U::Metadata,
-            "analysis" => return two("case", U::AnalysisCase),
-            "verification" => return two("case", U::VerificationCase),
+            // SysML v2 1.0 writes `analysis def` / `verification def`; drafts added `case`.
+            "analysis" => return Some(two("case", U::AnalysisCase).unwrap_or((U::AnalysisCase, 1))),
+            "verification" => return Some(two("case", U::VerificationCase).unwrap_or((U::VerificationCase, 1))),
             "use" => return two("case", U::UseCase),
             "succession" => return Some(two("flow", U::Flow).unwrap_or((U::Succession, 1))),
             "ref" => U::Ref,

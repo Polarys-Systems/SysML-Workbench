@@ -4,7 +4,7 @@
 //! `ui_edit.rs`; the canvas itself fills the window behind everything.
 
 use super::{Divider, Panes, Ui};
-use crate::config::ViewMode;
+use crate::config::{Canvas, ViewMode};
 use crate::document::Tone;
 use crate::diagram_view::{Fonts, contains};
 use crate::menu::{Command, Item};
@@ -35,6 +35,11 @@ pub(super) struct ChromeState {
     zoom_out: Rect,
     zoom_in: Rect,
     fit: Rect,
+    /// View switcher (one tab per canvas).
+    tabs: Vec<(Rect, Canvas)>,
+    tabs_card: Option<Rect>,
+    /// Interconnection view: the chip that picks the element shown.
+    root_chip: Option<Rect>,
 }
 
 pub(super) enum Card {
@@ -48,6 +53,7 @@ enum Hit {
     FileMenu(Rect),
     SettingsMenu(Rect),
     ProblemList(Rect),
+    RootMenu(Rect),
 }
 
 /// A translucent card with a soft shadow and a light top edge.
@@ -181,10 +187,14 @@ impl Ui {
             self.chrome.controls_row = Some([free[0], top, free[2], top + row_h]);
             self.chrome.palette_row = Some([free[0], bottom - row_h, free[2], bottom]);
             self.view.focus = Some([free[0], top + row_h + gap, free[2], bottom - row_h - gap]);
+            self.ibd.camera.focus = self.view.focus;
+            self.states.camera.focus = self.view.focus;
         } else {
             self.chrome.controls_row = None;
             self.chrome.palette_row = None;
             self.view.focus = None;
+            self.ibd.camera.focus = None;
+            self.states.camera.focus = None;
         }
         self.panes = panes;
     }
@@ -199,6 +209,8 @@ impl Ui {
             || on(c.tree_card)
             || on(c.stats)
             || on(c.zoom)
+            || on(c.tabs_card)
+            || on(c.root_chip)
             || on(self.edit.toolbar)
     }
 
@@ -206,6 +218,12 @@ impl Ui {
         let c = &self.chrome;
         if let Some(&(_, m)) = c.modes.iter().find(|(r, _)| contains(*r, p)) {
             return Some(Hit::Run(Command::Mode(m)));
+        }
+        if let Some(&(_, v)) = c.tabs.iter().find(|(r, _)| contains(*r, p)) {
+            return Some(Hit::Run(Command::Canvas(v)));
+        }
+        if let Some(r) = c.root_chip.filter(|r| contains(*r, p)) {
+            return Some(Hit::RootMenu(r));
         }
         let hits = [
             (Some(c.file), Hit::FileMenu(c.file)),
@@ -246,6 +264,10 @@ impl Ui {
                 let items = self.build_menus().into_iter().find(|m| m.title == "Settings").map(|m| m.items).unwrap_or_default();
                 self.menu.open_context(items, below(r, self.dpi));
             }
+            Some(Hit::RootMenu(r)) => {
+                let items = self.root_menu_items();
+                self.menu.open_context(items, below(r, self.dpi));
+            }
             Some(Hit::ProblemList(r)) => {
                 let items: Vec<Item> = self
                     .doc
@@ -261,7 +283,11 @@ impl Ui {
                     self.menu.open_context(items, below(r, self.dpi));
                 }
             }
-            None => return contains(self.chrome.top, p) || contains(self.chrome.status, p) || self.chrome.stats.is_some_and(|r| contains(r, p)) || self.chrome.zoom.is_some_and(|r| contains(r, p)),
+            None => {
+                let on = |r: Option<Rect>| r.is_some_and(|r| contains(r, p));
+                let c = &self.chrome;
+                return contains(c.top, p) || contains(c.status, p) || on(c.stats) || on(c.zoom) || on(c.tabs_card) || on(c.root_chip);
+            }
         }
         true
     }
@@ -334,6 +360,9 @@ impl Ui {
         self.edit.toolbar = None;
         self.chrome.stats = None;
         self.chrome.zoom = None;
+        self.chrome.tabs.clear();
+        self.chrome.tabs_card = None;
+        self.chrome.root_chip = None;
         let (Some(row), Some(palette_row)) = (self.chrome.controls_row, self.chrome.palette_row) else { return };
         let f = &theme.size.frame;
         let gap = (f.gap * dpi).round();
@@ -343,10 +372,25 @@ impl Ui {
         let lh = text.line_metrics(fonts.body, size).line_height;
         let radius = f.control_radius * dpi + pad;
 
-        self.edit.toolbar = Some(self.draw_toolbar(shapes, text, fonts, theme, palette_row, dpi));
+        if self.canvas == Canvas::General {
+            self.edit.toolbar = Some(self.draw_toolbar(shapes, text, fonts, theme, palette_row, dpi));
+        }
+        let left = self.draw_canvas_tabs(shapes, text, fonts, theme, row, dpi);
+        if matches!(self.canvas, Canvas::Interconnection | Canvas::States) {
+            // Where the palette is in the general view.
+            self.draw_root_chip(shapes, text, fonts, theme, palette_row, dpi);
+        }
+        if !self.canvas.is_diagram() {
+            return;
+        }
 
         // Zoom group, right-aligned: − 100% + | fit.
-        let pct = format!("{:.0}%", self.view.zoom * 100.0);
+        let zoom_level = match self.canvas {
+            Canvas::Interconnection => self.ibd.camera.zoom,
+            Canvas::States => self.states.camera.zoom,
+            _ => self.view.zoom,
+        };
+        let pct = format!("{:.0}%", zoom_level * 100.0);
         let pw = text.measure(fonts.body, size, "000%", None)[0] + 8.0 * dpi;
         let zw = ch * 3.0 + pw + pad * 4.0 + dpi;
         let zoom = [row[2] - zw, row[1], row[2], row[3]];
@@ -391,12 +435,15 @@ impl Ui {
         // Model numbers at the left of the row, when they fit beside the zoom group.
         let edges = self.doc.diagram.edges.iter().filter(|e| e.kind.visible(&self.config.diagram.edges)).count();
         let problems = self.doc.diagnostics.len();
-        let stats = [
+        let mut stats = vec![
             (self.doc.elements.len(), "elements"),
             (self.doc.diagram.nodes.len(), "nodes"),
             (edges, "relations"),
             (problems, if problems == 1 { "problem" } else { "problems" }),
         ];
+        if !self.doc.project.is_empty() {
+            stats.push((self.doc.project.len() + 1, "files"));
+        }
         let blocks: Vec<(String, f32, f32)> = stats
             .iter()
             .map(|(n, what)| {
@@ -408,8 +455,8 @@ impl Ui {
             .collect();
         let inner = 14.0 * dpi;
         let sw = blocks.iter().map(|(_, nw, ww)| nw + ww + 5.0 * dpi + 2.0 * inner).sum::<f32>() + pad * 2.0;
-        let space = [row[0], self.chrome.zoom.map_or(row[2], |z| z[0] - gap)];
-        if space[1] - space[0] >= sw {
+        let space = [left, self.chrome.zoom.map_or(row[2], |z| z[0] - gap)];
+        if self.canvas == Canvas::General && space[1] - space[0] >= sw {
             let x0 = space[0];
             let card = [x0, row[1], x0 + sw, row[3]];
             shapes.begin_layer(Transform::IDENTITY, None);
@@ -588,7 +635,12 @@ impl Ui {
         } else if code_active {
             &[("Ctrl+S", "save"), ("Ctrl+F", "find"), ("Ctrl+H", "replace"), ("F2", "rename"), ("Shift+Alt+F", "format"), ("Ctrl+Tab", "view")]
         } else {
-            &[("Tab", "view"), ("F", "fit"), ("L", "re-layout"), ("G", "grid"), ("C", "compartments"), ("Ctrl+S", "save")]
+            match self.canvas {
+                Canvas::General => &[("Tab", "view"), ("F", "fit"), ("L", "re-layout"), ("G", "grid"), ("C", "compartments"), ("Ctrl+S", "save")],
+                Canvas::Interconnection => &[("Double-click", "open part type"), ("Backspace", "back"), ("F", "fit"), ("Ctrl+E", "PNG"), ("Ctrl+1–7", "views")],
+                Canvas::States => &[("Double-click", "open state type"), ("Backspace", "back"), ("F", "fit"), ("Ctrl+E", "PNG"), ("Ctrl+1–7", "views")],
+                _ => &[("↑ ↓", "move"), ("Ctrl+E", "CSV"), ("Ctrl+1–7", "views"), ("Ctrl+S", "save")],
+            }
         };
         // Hints from the right; drop the last ones when the bar is too narrow.
         let pad = 16.0 * dpi;
@@ -624,7 +676,7 @@ impl Ui {
         } else if self.mode == ViewMode::Outline || code_active {
             (format!("{} elements · {} nodes", self.doc.elements.len(), self.doc.diagram.nodes.len()), theme.text_muted.0)
         } else {
-            (hint, theme.text_muted.0)
+            (self.canvas_status().unwrap_or(hint), theme.text_muted.0)
         };
         let mut left = msg;
         if self.config.view.show_frame_time {
@@ -633,6 +685,93 @@ impl Ui {
         text.set_clip(Some([bar[0] + pad, bar[1], hints_left - pad, bar[3]]));
         text.draw(TextStyle::new(fonts.body, size, color), [bar[0] + pad, ty], &left);
         text.set_clip(None);
+    }
+
+    pub(super) fn chrome_controls_row(&self) -> Option<Rect> {
+        self.chrome.controls_row
+    }
+
+    pub(super) fn chrome_palette_row(&self) -> Option<Rect> {
+        self.chrome.palette_row
+    }
+
+    /// A tab's text: the view's name, with the number of findings on Checks.
+    fn tab_label(&self, c: Canvas) -> String {
+        match (c, self.doc.checks.len()) {
+            (Canvas::Checks, n) if n > 0 => format!("Checks {n}"),
+            _ => c.label().to_string(),
+        }
+    }
+
+    /// The view switcher at the left of the controls row; returns where the
+    /// next control may start.
+    fn draw_canvas_tabs(&mut self, shapes: &mut ShapeRenderer, text: &mut TextRenderer, fonts: Fonts, theme: &Theme, row: Rect, dpi: f32) -> f32 {
+        let f = &theme.size.frame;
+        let gap = (f.gap * dpi).round();
+        let pad = (f.toolbar_pad * dpi).round();
+        let size = self.config.view.ui_font_size * dpi;
+        let lh = text.line_metrics(fonts.body, size).line_height;
+        let labels: Vec<String> = Canvas::ALL.iter().map(|&c| self.tab_label(c)).collect();
+        let widths: Vec<f32> = labels.iter().map(|l| (text.measure(fonts.title, size, l, None)[0] + 22.0 * dpi).round()).collect();
+        let w = widths.iter().sum::<f32>() + pad * 2.0;
+        // Leave room for the zoom group on narrow windows.
+        if row[0] + w > row[2] - 180.0 * dpi {
+            return row[0];
+        }
+        let card = [row[0], row[1], row[0] + w, row[3]];
+        shapes.begin_layer(Transform::IDENTITY, None);
+        glass_card(shapes, theme, card, f.control_radius * dpi + pad, dpi);
+        text.set_clip(Some(card));
+        let mut x = card[0] + pad;
+        let ty = (center(card)[1] - lh * 0.5).round();
+        for ((&c, bw), label) in Canvas::ALL.iter().zip(widths).zip(&labels) {
+            let r = [x, card[1] + pad, x + bw, card[3] - pad];
+            let on = self.canvas == c;
+            if on {
+                shapes.rect(r, theme.glass.control_active.0, f.control_radius * dpi);
+            } else if contains(r, self.cursor) {
+                shapes.rect(r, theme.hover_row.alpha(3.0), f.control_radius * dpi);
+            }
+            let (font, color) = if on { (fonts.title, theme.text.0) } else { (fonts.body, theme.text_muted.0) };
+            let tw = text.measure(font, size, label, None)[0];
+            text.draw(TextStyle::new(font, size, color), [(center(r)[0] - tw * 0.5).round(), ty], label);
+            self.chrome.tabs.push((r, c));
+            x = r[2];
+        }
+        text.set_clip(None);
+        self.chrome.tabs_card = Some(card);
+        card[2] + gap
+    }
+
+    /// Interconnection view: a chip naming the element shown, centered in
+    /// `row`, opening the list of candidates.
+    fn draw_root_chip(&mut self, shapes: &mut ShapeRenderer, text: &mut TextRenderer, fonts: Fonts, theme: &Theme, row: Rect, dpi: f32) {
+        let f = &theme.size.frame;
+        let pad = (f.toolbar_pad * dpi).round();
+        let size = self.config.view.ui_font_size * dpi;
+        let lh = text.line_metrics(fonts.body, size).line_height;
+        let back = if self.canvas == Canvas::States { &self.states.back } else { &self.ibd.back };
+        let prefix = if back.is_empty() { "Showing" } else { "◂ Showing" };
+        let name = self.root_label().unwrap_or_default();
+        let pw = text.measure(fonts.body, size, prefix, None)[0];
+        let nw = text.measure(fonts.title, size, &name, None)[0];
+        let w = (pw + nw + 54.0 * dpi).round().min(row[2] - row[0]);
+        let x = ((row[0] + row[2] - w) * 0.5).round();
+        let h = (f.control_height * dpi).round() + 2.0 * pad;
+        let card = [x, row[1], x + w, row[1] + h];
+        shapes.begin_layer(Transform::IDENTITY, None);
+        glass_card(shapes, theme, card, f.control_radius * dpi + pad, dpi);
+        if contains(card, self.cursor) {
+            let inner = [card[0] + pad, card[1] + pad, card[2] - pad, card[3] - pad];
+            shapes.rect(inner, theme.hover_row.alpha(3.0), f.control_radius * dpi);
+        }
+        let ty = (center(card)[1] - lh * 0.5).round();
+        text.set_clip(Some(card));
+        text.draw(TextStyle::new(fonts.body, size, theme.text_muted.0), [card[0] + 14.0 * dpi, ty], prefix);
+        text.draw(TextStyle::new(fonts.title, size, theme.text.0), [card[0] + 14.0 * dpi + pw + 6.0 * dpi, ty], &name);
+        text.set_clip(None);
+        chevron_down(shapes, [card[2] - 16.0 * dpi, center(card)[1]], theme.text_muted.0, dpi);
+        self.chrome.root_chip = Some(card);
     }
 
     pub(super) fn chrome_cursor_icon(&self, p: [f32; 2]) -> Option<CursorIcon> {

@@ -5,7 +5,105 @@ use crate::diagram::Diagram;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use sysml::eval::{Status, Verdict};
-use sysml::{Category, Index, LineIndex, Member, Span};
+use crate::allocations::Allocations;
+use crate::checks::Finding;
+use crate::requirements::Requirements;
+use sysml::{Category, EntryId, Index, LineIndex, Member, MemberKind, Model, Severity, Span};
+
+/// Project files are looked for this many folders below the model's folder.
+const PROJECT_DEPTH: usize = 3;
+const MAX_PROJECT_FILES: usize = 200;
+/// Folders never searched for project files.
+const SKIPPED_DIRS: [&str; 4] = ["target", "node_modules", "dist", "build"];
+
+/// Another `.sysml` file of the project: read only, its names resolve in
+/// the edited file and its requirements show in the requirement views.
+pub struct ProjectFile {
+    pub path: PathBuf,
+    pub model: Model,
+    pub modified: Option<SystemTime>,
+    /// The file has syntax errors (what could be read is still used).
+    pub has_errors: bool,
+}
+
+impl ProjectFile {
+    fn load(path: PathBuf) -> Option<Self> {
+        let src = std::fs::read_to_string(&path).ok()?;
+        let result = sysml::parse(&src.replace("\r\n", "\n"));
+        Some(ProjectFile { modified: modified(&path), has_errors: result.has_errors(), model: result.model, path })
+    }
+
+    pub fn file_name(&self) -> String {
+        self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+}
+
+/// The `.sysml` files in `model`'s folder and the folders below it, except `model`.
+pub fn project_paths(model: &Path) -> Vec<PathBuf> {
+    let dir = match model.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let me = std::fs::canonicalize(model).ok();
+    let mut out = Vec::new();
+    let mut stack = vec![(dir, 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                if depth < PROJECT_DEPTH && !name.starts_with('.') && !SKIPPED_DIRS.contains(&name.as_str()) {
+                    stack.push((path, depth + 1));
+                }
+            } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("sysml"))
+                && std::fs::canonicalize(&path).ok() != me
+            {
+                out.push(path);
+                if out.len() >= MAX_PROJECT_FILES {
+                    break;
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// One namespace over the edited model, the other project files and the standard library.
+fn index_over<'a>(model: &'a Model, project: &'a [ProjectFile]) -> Index<'a> {
+    let mut models: Vec<&Model> = vec![model];
+    models.extend(project.iter().map(|f| &f.model));
+    models.extend(sysml::library::files().iter().map(|f| &f.model));
+    Index::build_many(&models)
+}
+
+/// Type names (`: T`, `:> T` on definitions) of `model` that resolve nowhere.
+fn unresolved_types(model: &Model, index: &Index) -> Vec<sysml::Diagnostic> {
+    let mut out = Vec::new();
+    let mut stack: Vec<(&[Member], Option<EntryId>)> = vec![(&model.members, None)];
+    while let Some((members, scope)) = stack.pop() {
+        for m in members {
+            let names: Vec<&sysml::QualifiedName> = match &m.kind {
+                MemberKind::Definition(d) => d.specializes.iter().collect(),
+                MemberKind::Usage(u) => u.typed_by.iter().map(|t| &t.name).collect(),
+                _ => Vec::new(),
+            };
+            for n in names {
+                if index.resolve(scope, n).is_none() {
+                    out.push(sysml::Diagnostic {
+                        severity: Severity::Warning,
+                        message: format!("`{n}` is not found in this file, the other files of its folder or the standard library"),
+                        span: n.span,
+                    });
+                }
+            }
+            stack.push((m.kind.body(), index.id_of(m).or(scope)));
+        }
+    }
+    out
+}
 
 /// A model element and where it is written.
 pub struct Element {
@@ -57,6 +155,17 @@ pub struct Document {
     /// Error reading the file, if any.
     pub load_error: Option<String>,
     pub diagram: Diagram,
+    /// The model last parsed, for views built on demand.
+    pub model: Model,
+    /// Incremented by every reparse, so views know when to rebuild.
+    pub generation: u64,
+    pub requirements: Requirements,
+    pub allocations: Allocations,
+    /// Model checks over the whole project, warnings first.
+    pub checks: Vec<Finding>,
+    /// The other `.sysml` files of the folder (and below), in path order;
+    /// entry source `i + 1` of [`Self::index`] is `project[i]`.
+    pub project: Vec<ProjectFile>,
     /// Modification time when loaded or saved, to notice edits by other programs.
     pub modified: Option<SystemTime>,
 }
@@ -79,8 +188,17 @@ impl Document {
             untitled: false,
             load_error: None,
             diagram: Diagram::default(),
+            model: Model::default(),
+            generation: 0,
+            requirements: Requirements::default(),
+            allocations: Allocations::default(),
+            checks: Vec::new(),
+            project: Vec::new(),
             modified,
         };
+        if !doc.path.as_os_str().is_empty() {
+            doc.project = project_paths(&doc.path).into_iter().filter_map(ProjectFile::load).collect();
+        }
         match std::fs::read_to_string(&doc.path) {
             Ok(src) => {
                 doc.crlf = src.contains("\r\n");
@@ -100,9 +218,11 @@ impl Document {
         self.tree.clear();
         let mut path = Vec::new();
         collect(&result.model.members, &mut path, "", &mut self.elements, &mut self.tree);
-        let report = sysml::eval::evaluate(&result.model, &Index::build(&result.model));
+        let index = index_over(&result.model, &self.project);
+        let report = sysml::eval::evaluate_source(&result.model, &index, 0);
+        let unresolved = unresolved_types(&result.model, &index);
         let lines = LineIndex::new(src);
-        let mut diagnostics: Vec<&sysml::Diagnostic> = result.diagnostics.iter().chain(&report.diagnostics).collect();
+        let mut diagnostics: Vec<&sysml::Diagnostic> = result.diagnostics.iter().chain(&report.diagnostics).chain(&unresolved).collect();
         diagnostics.sort_by_key(|d| d.span.start);
         self.diagnostics = diagnostics
             .into_iter()
@@ -112,11 +232,88 @@ impl Document {
             })
             .collect();
         self.annotations = annotations(&report);
-        self.diagram = Diagram::build(&result.model);
+        let names: Vec<String> = self.project.iter().map(ProjectFile::file_name).collect();
+        let file_of = |source: usize| source.checked_sub(1).and_then(|i| names.get(i).cloned());
+        self.diagram = Diagram::build_in(&index, &result.model, &file_of);
         self.diagram.apply_report(&report);
         if !self.untitled {
             self.diagram.load_positions(&Diagram::layout_path(&self.path));
         }
+        // Requirements of the whole project, checked where their `satisfy` is written.
+        let mut checks = report.checks.clone();
+        let mut models: Vec<&Model> = vec![&result.model];
+        for (i, f) in self.project.iter().enumerate() {
+            checks.extend(sysml::eval::evaluate_source(&f.model, &index, i + 1).checks);
+            models.push(&f.model);
+        }
+        let project_len = self.project.len();
+        let mut requirements = Requirements::build(&index, &models, &checks, |id| {
+            let s = index.entry(id).source;
+            (s <= project_len).then_some(s)
+        });
+        for r in &mut requirements.rows {
+            r.file = file_of(r.source);
+        }
+        let source_of = |id: EntryId| {
+            let s = index.entry(id).source;
+            (s <= project_len).then_some(s)
+        };
+        let mut allocations = Allocations::build(&index, &models, source_of);
+        for a in allocations.rows.iter_mut().chain(allocations.columns.iter_mut()) {
+            a.file = file_of(a.source);
+        }
+        let mut checks = crate::checks::run(&crate::checks::Input { index: &index, models: &models, requirements: &requirements, allocations: &allocations, source_of: &source_of });
+        for c in &mut checks {
+            c.file = file_of(c.source);
+        }
+        drop(index);
+        self.requirements = requirements;
+        self.allocations = allocations;
+        self.checks = checks;
+        self.model = result.model;
+        self.generation += 1;
+    }
+
+    /// Name lookup over the model last parsed, the other project files and
+    /// the standard library ([`Entry::source`](sysml::Entry): 0 is this file,
+    /// `i + 1` is `project[i]`, the rest the library).
+    pub fn index(&self) -> Index<'_> {
+        index_over(&self.model, &self.project)
+    }
+
+    /// Whether entry `id` of [`Self::index`] is written in this file.
+    pub fn is_local(&self, index: &Index, id: EntryId) -> bool {
+        index.entry(id).source == 0
+    }
+
+    /// The file of an entry source of [`Self::index`], if it is a project file.
+    pub fn source_path(&self, source: usize) -> Option<&Path> {
+        match source {
+            0 => Some(&self.path),
+            s => self.project.get(s - 1).map(|f| f.path.as_path()),
+        }
+    }
+
+    /// Picks up project files that were added, removed or changed on disk.
+    /// True if anything changed (the edited text should then be reparsed).
+    pub fn refresh_project(&mut self) -> bool {
+        if self.untitled || self.path.as_os_str().is_empty() {
+            return false;
+        }
+        let paths = project_paths(&self.path);
+        let same_list = paths.len() == self.project.len() && paths.iter().zip(&self.project).all(|(p, f)| *p == f.path);
+        if same_list && self.project.iter().all(|f| modified(&f.path) == f.modified) {
+            return false;
+        }
+        let mut old: Vec<ProjectFile> = std::mem::take(&mut self.project);
+        self.project = paths
+            .into_iter()
+            .filter_map(|p| match old.iter().position(|f| f.path == p && modified(&p) == f.modified) {
+                Some(i) => Some(old.swap_remove(i)),
+                None => ProjectFile::load(p),
+            })
+            .collect();
+        true
     }
 
     /// Writes `text` to the file, with the file's original line breaks.
@@ -277,4 +474,86 @@ pub struct TreeRow {
 /// Number of named segments in `path` (all of them, unless an anonymous element is on it).
 fn named_depth(path: &[&str]) -> usize {
     path.iter().position(|s| s.is_empty()).unwrap_or(path.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ibd::Ibd;
+
+    /// A folder with `files`, removed when dropped.
+    struct TempProject(PathBuf);
+
+    impl TempProject {
+        fn new(name: &str, files: &[(&str, &str)]) -> Self {
+            let dir = std::env::temp_dir().join(format!("eagleview-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            for (path, text) in files {
+                let p = dir.join(path);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, text).unwrap();
+            }
+            TempProject(dir)
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const PARTS: &str = "package Parts {
+        port def FuelPort { in item fuel; }
+        part def Engine { port intake : FuelPort; attribute mass = 120 [kg]; }
+        requirement def <'R9'> Light { doc /* Light enough. */ subject c; }
+    }";
+    const CAR: &str = "package Car {
+        private import Parts::*;
+        private import ISQ::*;
+        part def Car { part engine : Engine; port tank : ~FuelPort; connect tank to engine.intake; attribute top : SpeedValue; }
+        part car : Car;
+        requirement light : Light;
+        satisfy light by car;
+        part def Broken { attribute x : NoSuchType; }
+    }";
+
+    #[test]
+    fn project_files_resolve_and_trace_across_files() {
+        let p = TempProject::new("project", &[("car.sysml", CAR), ("lib/parts.sysml", PARTS), ("target/ignored.sysml", "package X {")]);
+        let doc = Document::load(p.0.join("car.sysml"));
+        assert_eq!(doc.project.len(), 1, "target/ is skipped");
+        assert_eq!(doc.project[0].file_name(), "parts.sysml");
+        // Only the deliberately unknown type is reported; Engine, FuelPort and SpeedValue resolve.
+        let warnings: Vec<&str> = doc.diagnostics.iter().map(|d| d.text.as_str()).collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("`NoSuchType` is not found"), "{warnings:?}");
+        // Engine shows as a read-only node from the other file.
+        let engine = doc.diagram.node_named("Parts::Engine").expect("external node");
+        assert_eq!(doc.diagram.nodes[engine].external.as_deref(), Some("parts.sysml"));
+        assert!(doc.diagram.nodes.iter().filter(|n| n.external.is_some()).all(|n| n.qualified_name.starts_with("Parts::")));
+        // Requirements of both files, the definition's text across files.
+        let light = doc.requirements.rows.iter().find(|r| r.name == "light").unwrap();
+        assert_eq!(light.text, "Light enough.");
+        assert_eq!(light.satisfied_by, ["car"]);
+        let def = doc.requirements.rows.iter().find(|r| r.name == "Light").unwrap();
+        assert_eq!((def.id.as_str(), def.file.as_deref()), ("R9", Some("parts.sysml")));
+        // The interconnection view looks into the other file's definition.
+        let index = doc.index();
+        let ibd = Ibd::build(&index, index.get("Car::Car").unwrap());
+        assert!(ibd.parts.iter().any(|p| p.title == "engine : Engine"));
+        assert_eq!(ibd.links.len(), 1, "tank to engine.intake");
+        assert!(crate::ibd::candidates(&index, |id| doc.is_local(&index, id)).iter().all(|q| q.starts_with("Car::")));
+    }
+
+    #[test]
+    fn project_changes_are_picked_up() {
+        let p = TempProject::new("refresh", &[("a.sysml", "package A { part def X; }")]);
+        let mut doc = Document::load(p.0.join("a.sysml"));
+        assert!(!doc.refresh_project());
+        std::fs::write(p.0.join("b.sysml"), "package B { part def Y; }").unwrap();
+        assert!(doc.refresh_project());
+        assert_eq!(doc.project.len(), 1);
+        assert!(doc.index().get("B::Y").is_some());
+    }
 }
