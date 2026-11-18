@@ -17,6 +17,7 @@ mod diagram;
 mod diagram_view;
 mod dialog;
 mod docs;
+mod element_docs;
 mod document;
 mod editor;
 mod export;

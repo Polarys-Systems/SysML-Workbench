@@ -37,6 +37,12 @@ pub struct Entry {
     pub see: Vec<String>,
     #[serde(default)]
     pub spec: Option<String>,
+    /// Library definition that definitions of this kind implicitly specialize.
+    #[serde(default)]
+    pub library_def: Option<String>,
+    /// Library feature that usages of this kind implicitly subset.
+    #[serde(default)]
+    pub library_usage: Option<String>,
 }
 
 impl Entry {
@@ -170,6 +176,18 @@ mod tests {
         assert_eq!(first(r.for_symbol("]")), Some("[ ]"));
         assert_eq!(first(r.for_symbol(":>")), Some("specializes"));
         assert!(r.for_symbol(",").is_none());
+    }
+
+    #[test]
+    fn library_types_exist() {
+        let r = Reference::parse(SOURCE).unwrap();
+        let models: Vec<&sysml::Model> = sysml::library::files().iter().map(|f| &f.model).collect();
+        let index = sysml::Index::build_many(&models);
+        let names: Vec<&str> = r.entries.iter().flat_map(|e| e.library_def.iter().chain(&e.library_usage)).map(String::as_str).collect();
+        assert!(names.len() > 20);
+        for n in names {
+            assert!(index.get(n).is_some(), "library has no `{n}`");
+        }
     }
 
     #[test]

@@ -20,6 +20,10 @@
 #       example   a short, self-contained snippet (optional)
 #       see       names of related entries (optional)
 #       spec      clause of the Part 1 specification (optional)
+#       library_def    library definition that definitions of this kind implicitly
+#                      specialize (optional)
+#       library_usage  library feature that usages of this kind implicitly subset
+#                      (optional)
 #
 # Every reserved word in sysml/src/lexer.rs KEYWORDS has an entry.
 
@@ -699,6 +703,8 @@ spec = "7.4.3"
 
 [[entry]]
 names = ["attribute"]
+library_def = "Base::DataValue"
+library_usage = "Base::dataValues"
 category = "data"
 kind = "keyword"
 summary = "Data values: numbers, quantities with units, strings, or structures of them."
@@ -774,6 +780,8 @@ spec = "7.13.4"
 
 [[entry]]
 names = ["occurrence"]
+library_def = "Occurrences::Occurrence"
+library_usage = "Occurrences::occurrences"
 category = "structure"
 kind = "keyword"
 summary = "Something that exists in time and space; the base kind of items, parts and actions."
@@ -866,6 +874,8 @@ spec = "7.9.5"
 
 [[entry]]
 names = ["item"]
+library_def = "Items::Item"
+library_usage = "Items::items"
 category = "structure"
 kind = "keyword"
 summary = "A thing that can exist, be stored or flow through a system, without further structure."
@@ -886,6 +896,8 @@ spec = "7.10"
 
 [[entry]]
 names = ["part"]
+library_def = "Parts::Part"
+library_usage = "Parts::parts"
 category = "structure"
 kind = "keyword"
 summary = "The basic unit of structure: a system, subsystem or component."
@@ -908,6 +920,8 @@ spec = "7.11"
 
 [[entry]]
 names = ["port"]
+library_def = "Ports::Port"
+library_usage = "Ports::ports"
 category = "structure"
 kind = "keyword"
 summary = "A connection point on a part where things can flow in or out."
@@ -931,6 +945,8 @@ spec = "7.12"
 
 [[entry]]
 names = ["connection", "connect", "end"]
+library_def = "Connections::Connection"
+library_usage = "Connections::connections"
 category = "structure"
 kind = "keyword"
 summary = "Links between things. end declares the participants; connect ... to ... uses a link."
@@ -1011,6 +1027,8 @@ spec = "7.13.2"
 
 [[entry]]
 names = ["interface"]
+library_def = "Interfaces::Interface"
+library_usage = "Interfaces::interfaces"
 category = "structure"
 kind = "keyword"
 summary = "A connection whose ends are ports."
@@ -1037,6 +1055,8 @@ spec = "7.14"
 
 [[entry]]
 names = ["allocation", "allocate"]
+library_def = "Allocations::Allocation"
+library_usage = "Allocations::allocations"
 category = "structure"
 kind = "keyword"
 summary = "Assigns responsibility for something to something else, e.g. logical to physical."
@@ -1099,6 +1119,8 @@ spec = "7.16"
 
 [[entry]]
 names = ["action"]
+library_def = "Actions::Action"
+library_usage = "Actions::actions"
 category = "behavior"
 kind = "keyword"
 summary = "Behavior: something that is done, with inputs and outputs and an ordering of steps."
@@ -1425,6 +1447,8 @@ spec = "7.17.7"
 
 [[entry]]
 names = ["state"]
+library_def = "States::StateAction"
+library_usage = "States::stateActions"
 category = "behavior"
 kind = "keyword"
 summary = "A condition of a system with entry, do and exit actions and transitions between states."
@@ -1549,6 +1573,8 @@ spec = "7.18.4"
 
 [[entry]]
 names = ["calc", "return"]
+library_def = "Calculations::Calculation"
+library_usage = "Calculations::calculations"
 category = "analysis"
 kind = "keyword"
 summary = "A calculation: a parameterized expression that returns a result."
@@ -1575,6 +1601,8 @@ spec = "7.19"
 
 [[entry]]
 names = ["constraint", "assert"]
+library_def = "Constraints::ConstraintCheck"
+library_usage = "Constraints::constraintChecks"
 category = "analysis"
 kind = "keyword"
 summary = "A Boolean condition that can be checked; assert says it must always hold."
@@ -1607,6 +1635,8 @@ spec = "7.20"
 
 [[entry]]
 names = ["requirement", "require", "assume"]
+library_def = "Requirements::RequirementCheck"
+library_usage = "Requirements::requirementChecks"
 category = "analysis"
 kind = "keyword"
 summary = "A constraint a subject must satisfy: if the assumptions hold, the required constraints must hold."
@@ -1694,6 +1724,7 @@ spec = "7.21.2"
 
 [[entry]]
 names = ["concern", "frame"]
+library_def = "Requirements::ConcernCheck"
 category = "analysis"
 kind = "keyword"
 summary = "A stakeholder concern, and a viewpoint's framing of it."
@@ -1716,6 +1747,8 @@ spec = "7.21.3"
 
 [[entry]]
 names = ["case"]
+library_def = "Cases::Case"
+library_usage = "Cases::cases"
 category = "analysis"
 kind = "keyword"
 summary = "A set of steps that produce a result for a subject to meet an objective."
@@ -1736,6 +1769,8 @@ spec = "7.22"
 
 [[entry]]
 names = ["analysis"]
+library_def = "AnalysisCases::AnalysisCase"
+library_usage = "AnalysisCases::analysisCases"
 category = "analysis"
 kind = "keyword"
 summary = "A case whose steps analyze a subject, such as a calculation or a trade-off study."
@@ -1757,6 +1792,8 @@ spec = "7.23"
 
 [[entry]]
 names = ["verification", "verify"]
+library_def = "VerificationCases::VerificationCase"
+library_usage = "VerificationCases::verificationCases"
 category = "analysis"
 kind = "keyword"
 summary = "A case that checks requirements against a subject and returns a verdict."
@@ -1785,6 +1822,8 @@ spec = "7.24"
 
 [[entry]]
 names = ["use", "include"]
+library_def = "UseCases::UseCase"
+library_usage = "UseCases::useCases"
 category = "analysis"
 kind = "keyword"
 summary = "use case: what a subject does of value for actors. include use case reuses another."
@@ -1814,6 +1853,7 @@ spec = "7.25"
 
 [[entry]]
 names = ["viewpoint"]
+library_def = "Views::Viewpoint"
 category = "views"
 kind = "keyword"
 summary = "The perspective a view must satisfy, framing stakeholder concerns."
@@ -1827,6 +1867,7 @@ spec = "7.26.3"
 
 [[entry]]
 names = ["view"]
+library_def = "Views::View"
 category = "views"
 kind = "keyword"
 summary = "A query on the model plus a rendering of its results."
@@ -1867,6 +1908,7 @@ spec = "7.26.2"
 
 [[entry]]
 names = ["render", "rendering"]
+library_def = "Views::Rendering"
 category = "views"
 kind = "keyword"
 summary = "How a view's content is presented."
@@ -1881,6 +1923,7 @@ spec = "7.26.4"
 
 [[entry]]
 names = ["metadata", "@"]
+library_def = "Metadata::MetadataItem"
 category = "views"
 kind = "keyword"
 summary = "Tagging elements with extra, user-defined information."

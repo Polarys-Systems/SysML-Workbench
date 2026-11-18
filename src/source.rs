@@ -106,6 +106,38 @@ pub fn symbol_at(src: &str, offset: usize) -> Option<(String, (usize, usize))> {
     Some((name_of(src, t)?, (t.span.start, t.span.end)))
 }
 
+/// The name written at `offset` with the names before it that it is
+/// reached through: `Vehicles::Car` or `car.engine.mass`, up to and
+/// including the name under `offset`. Each group of the result is a
+/// qualified name (`A::B`); groups are joined by `.` in the source. Also
+/// returns the hovered name's span and the token kind just before the path
+/// (`:`, `:>>`, `[`, ...).
+pub fn path_at(src: &str, offset: usize) -> Option<NamePath> {
+    let toks = tokens(src);
+    let is_name = |t: &Token| matches!(t.kind, TokenKind::Ident | TokenKind::UnrestrictedName);
+    let at = toks.iter().position(|t| is_name(t) && t.span.start <= offset && offset < t.span.end)?;
+    let mut groups: Vec<Vec<String>> = vec![vec![name_of(src, &toks[at])?]];
+    let mut i = at;
+    while i >= 2 && is_name(&toks[i - 2]) {
+        match toks[i - 1].kind {
+            TokenKind::Symbol("::") => groups[0].insert(0, name_of(src, &toks[i - 2])?),
+            TokenKind::Symbol(".") => groups.insert(0, vec![name_of(src, &toks[i - 2])?]),
+            _ => break,
+        }
+        i -= 2;
+    }
+    let before = i.checked_sub(1).map(|j| toks[j].kind);
+    Some(NamePath { groups, span: (toks[at].span.start, toks[at].span.end), before })
+}
+
+/// See [`path_at`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamePath {
+    pub groups: Vec<Vec<String>>,
+    pub span: (usize, usize),
+    pub before: Option<TokenKind>,
+}
+
 /// Every token naming `name`, in either spelling (`Engine` or `'Engine'`).
 pub fn occurrences(src: &str, name: &str) -> Vec<(usize, usize)> {
     tokens(src)
